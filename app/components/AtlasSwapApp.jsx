@@ -611,6 +611,7 @@ export default function AtlasSwapApp() {
 
         ::placeholder { color: rgba(240,244,255,0.2); }
         input:focus { outline: none; }
+        html { scroll-behavior: smooth; }
       `}</style>
 
       {/* ── Background atmosphere ── */}
@@ -722,8 +723,13 @@ export default function AtlasSwapApp() {
 
         {/* Nav links */}
         <div style={{ display: "flex", gap: "32px", alignItems: "center" }}>
-          {["Exchange", "Features", "API Partners", "About"].map(item => (
-            <a key={item} href="#" className="nav-link">{item}</a>
+          {[
+            { label: "Exchange", href: "#exchange" },
+            { label: "Features", href: "#features" },
+            { label: "API Partners", href: "#api-partners" },
+            { label: "About", href: "#about" },
+          ].map(({ label, href }) => (
+            <a key={label} href={href} className="nav-link">{label}</a>
           ))}
         </div>
 
@@ -748,7 +754,7 @@ export default function AtlasSwapApp() {
       </nav>
 
       {/* ── Main content ── */}
-      <div style={{
+      <div id="exchange" style={{
         position: "relative", zIndex: 10,
         maxWidth: "1320px", margin: "0 auto",
         padding: "64px 48px 48px",
@@ -1231,7 +1237,7 @@ export default function AtlasSwapApp() {
           )}
 
           {/* Provider attribution bar */}
-          <div style={{
+          <div id="api-partners" style={{
             marginTop: "14px", padding: "12px 16px",
             background: "rgba(255,255,255,0.02)",
             border: "1px solid rgba(255,255,255,0.05)",
@@ -1263,7 +1269,7 @@ export default function AtlasSwapApp() {
       </div>
 
       {/* ── Feature strip ── */}
-      <div style={{
+      <div id="features" style={{
         position: "relative", zIndex: 10,
         maxWidth: "1320px", margin: "0 auto 64px",
         padding: "0 48px",
@@ -1305,7 +1311,7 @@ export default function AtlasSwapApp() {
       </div>
 
       {/* ── Footer ── */}
-      <div style={{
+      <div id="about" style={{
         position: "relative", zIndex: 10,
         borderTop: "1px solid rgba(255,255,255,0.05)",
         padding: "24px 48px",
