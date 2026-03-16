@@ -41,6 +41,10 @@ const BASE_RATES = {
   ARB: 1.12, OP: 1.85, INJ: 22, SUI: 1.4, APT: 8.9,
 };
 
+function formatNumberEnUS(value, options = {}) {
+  return new Intl.NumberFormat("en-US", options).format(value);
+}
+
 // ═══════════════════════════════════════════════════════════════
 // API LAYER — ChangeNOW + SimpleSwap + Swapzone
 // Rate comparison runs silently in background
@@ -836,7 +840,7 @@ export default function AtlasSwapApp() {
               }}>
                 <span style={{ color: c.color, fontWeight: 700, letterSpacing: "0.04em" }}>{c.symbol}</span>
                 <span style={{ color: "rgba(240,244,255,0.55)" }}>
-                  ${price < 0.01 ? price.toExponential(2) : price < 1 ? price.toFixed(4) : price.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                  ${price < 0.01 ? price.toExponential(2) : price < 1 ? price.toFixed(4) : formatNumberEnUS(price, { maximumFractionDigits: 2 })}
                 </span>
                 <span style={{
                   color: isUp ? "#00E5A0" : "#FF5A72",
@@ -1088,7 +1092,7 @@ export default function AtlasSwapApp() {
                     display: "flex", gap: "16px",
                   }}>
                     <span>
-                      ≈ ${((parseFloat(sendAmt) || 0) * (tickerPrices[fromCoin] || 0)).toLocaleString(undefined, { maximumFractionDigits: 2 })} USD
+                      ≈ ${formatNumberEnUS((parseFloat(sendAmt) || 0) * (tickerPrices[fromCoin] || 0), { maximumFractionDigits: 2 })} USD
                     </span>
                     <span style={{ color: "rgba(0,229,160,0.55)" }}>All fees included</span>
                   </div>
