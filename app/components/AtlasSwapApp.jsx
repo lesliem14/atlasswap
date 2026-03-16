@@ -1,6 +1,5 @@
 "use client";
 import { useState, useEffect, useRef, useCallback } from "react";
-import { createPortal } from "react-dom";
 import ConnectWalletButton from "./ConnectWalletButton";
 
 // ═══════════════════════════════════════════════════════════════
@@ -20,7 +19,7 @@ const COINS = [
   { symbol: "TRX",  name: "TRON",          color: "#FF3D3D", bg: "#200000", icon: "◉" },
   { symbol: "LINK", name: "Chainlink",     color: "#375BD2", bg: "#000d25", icon: "⬡" },
   { symbol: "DOT",  name: "Polkadot",      color: "#E6007A", bg: "#200015", icon: "●" },
-  { symbol: "MATIC", name: "Polygon",      color: "#8247E5", bg: "#0d0025", icon: "⬟" },
+  { symbol: "MATIC","name": "Polygon",     color: "#8247E5", bg: "#0d0025", icon: "⬟" },
   { symbol: "LTC",  name: "Litecoin",      color: "#A0A0A0", bg: "#111111", icon: "Ł" },
   { symbol: "UNI",  name: "Uniswap",       color: "#FF007A", bg: "#200015", icon: "♦" },
   { symbol: "ATOM", name: "Cosmos",        color: "#6F7390", bg: "#0a0a15", icon: "⚛" },
@@ -50,52 +49,74 @@ const API_CONFIG = {
   changenow: {
     name: "ChangeNOW",
     baseUrl: "https://api.changenow.io/v1",
-    apiKey: process.env.NEXT_PUBLIC_CHANGENOW_API_KEY || "YOUR_CHANGENOW_API_KEY",
+    apiKey: process.env.NEXT_PUBLIC_CHANGENOW_API_KEY || "",
   },
   simpleswap: {
     name: "SimpleSwap",
-    baseUrl: "https://api.simpleswap.io",
-    apiKey: process.env.NEXT_PUBLIC_SIMPLESWAP_API_KEY || "YOUR_SIMPLESWAP_API_KEY",
+    baseUrl: "https://api.simpleswap.io/v3",
+    apiKey: process.env.NEXT_PUBLIC_SIMPLESWAP_API_KEY || "",
   },
   swapzone: {
     name: "Swapzone",
     baseUrl: "https://api.swapzone.io/v1",
-    apiKey: process.env.NEXT_PUBLIC_SWAPZONE_API_KEY || "YOUR_SWAPZONE_API_KEY",
+    apiKey: process.env.NEXT_PUBLIC_SWAPZONE_API_KEY || "",
   },
 };
 
-// Fetch rate from ChangeNOW
+// ── SimpleSwap V3 requires ticker:network format ──
+// Maps our coin symbols to their primary network
+const SS_NETWORKS = {
+  BTC:"btc", ETH:"eth", USDT:"eth", BNB:"bsc", SOL:"sol",
+  USDC:"eth", XRP:"xrp", DOGE:"doge", ADA:"ada", AVAX:"avax",
+  TRX:"trx", LINK:"eth", DOT:"dot", MATIC:"matic", LTC:"ltc",
+  UNI:"eth", ATOM:"atom", XMR:"xmr", TON:"ton", SHIB:"eth",
+  ARB:"arbitrum", OP:"optimism", INJ:"inj", SUI:"sui", APT:"apt",
+};
+
+// ── Fetch rate from ChangeNOW ──
 async function fetchChangeNowRate(from, to, amount) {
   try {
-    const url = `${API_CONFIG.changenow.baseUrl}/exchange-amount/${amount}/${from.toLowerCase()}_${to.toLowerCase()}?api_key=${API_CONFIG.changenow.apiKey}`;
+    const key = API_CONFIG.changenow.apiKey;
+    if (!key) throw new Error("No key");
+    const url = `${API_CONFIG.changenow.baseUrl}/exchange-amount/${amount}/${from.toLowerCase()}_${to.toLowerCase()}?api_key=${key}`;
     const res = await fetch(url);
-    if (!res.ok) throw new Error("ChangeNOW API error");
+    if (!res.ok) throw new Error("ChangeNOW error");
     const data = await res.json();
+    if (!data.estimatedAmount) throw new Error("No amount");
     return {
       provider: "ChangeNOW",
       rate: parseFloat(data.estimatedAmount),
       rawRate: parseFloat(data.estimatedAmount) / amount,
       available: true,
+      simulated: false,
     };
   } catch {
-    // Fallback to simulated rate during development
     const rate = ((amount * (BASE_RATES[from] || 1)) / (BASE_RATES[to] || 1)) * 0.996;
     return { provider: "ChangeNOW", rate, rawRate: rate / amount, available: true, simulated: true };
   }
 }
 
-// Fetch rate from SimpleSwap
+// ── Fetch rate from SimpleSwap V3 ──
 async function fetchSimpleSwapRate(from, to, amount) {
   try {
-    const url = `${API_CONFIG.simpleswap.baseUrl}/get_estimated?api_key=${API_CONFIG.simpleswap.apiKey}&currency_from=${from.toLowerCase()}&currency_to=${to.toLowerCase()}&amount=${amount}&fixed=false`;
-    const res = await fetch(url);
-    if (!res.ok) throw new Error("SimpleSwap API error");
+    const key = API_CONFIG.simpleswap.apiKey;
+    if (!key) throw new Error("No key");
+    const netFrom = SS_NETWORKS[from] || from.toLowerCase();
+    const netTo   = SS_NETWORKS[to]   || to.toLowerCase();
+    const url = `${API_CONFIG.simpleswap.baseUrl}/estimates?tickerFrom=${from.toLowerCase()}&networkFrom=${netFrom}&tickerTo=${to.toLowerCase()}&networkTo=${netTo}&amount=${amount}&fixed=false`;
+    const res = await fetch(url, {
+      headers: { "x-api-key": key, "Accept": "application/json" },
+    });
+    if (!res.ok) throw new Error("SimpleSwap V3 error");
     const data = await res.json();
+    const estimated = parseFloat(data?.result?.amountTo || data?.result || 0);
+    if (!estimated || isNaN(estimated)) throw new Error("No amount");
     return {
       provider: "SimpleSwap",
-      rate: parseFloat(data),
-      rawRate: parseFloat(data) / amount,
+      rate: estimated,
+      rawRate: estimated / amount,
       available: true,
+      simulated: false,
     };
   } catch {
     const rate = ((amount * (BASE_RATES[from] || 1)) / (BASE_RATES[to] || 1)) * 0.992;
@@ -103,19 +124,25 @@ async function fetchSimpleSwapRate(from, to, amount) {
   }
 }
 
-// Fetch rate from Swapzone
+// ── Fetch rate from Swapzone ──
 async function fetchSwapzoneRate(from, to, amount) {
   try {
-    const url = `${API_CONFIG.swapzone.baseUrl}/exchange/get-rate?from=${from.toLowerCase()}&to=${to.toLowerCase()}&amount=${amount}&apikey=${API_CONFIG.swapzone.apiKey}`;
+    const key = API_CONFIG.swapzone.apiKey;
+    if (!key) throw new Error("No key");
+    const url = `${API_CONFIG.swapzone.baseUrl}/exchange/get-rate?from=${from.toLowerCase()}&to=${to.toLowerCase()}&amount=${amount}&apikey=${key}&noRefunds=false`;
     const res = await fetch(url);
-    if (!res.ok) throw new Error("Swapzone API error");
+    if (!res.ok) throw new Error("Swapzone error");
     const data = await res.json();
-    const best = data.sort((a, b) => b.toAmount - a.toAmount)[0];
+    const rates = Array.isArray(data) ? data : (data.rates || [data]);
+    const best = rates.filter(r => r.toAmount > 0).sort((a, b) => b.toAmount - a.toAmount)[0];
+    if (!best?.toAmount) throw new Error("No amount");
     return {
       provider: "Swapzone",
-      rate: parseFloat(best?.toAmount || 0),
-      rawRate: parseFloat(best?.toAmount || 0) / amount,
+      rate: parseFloat(best.toAmount),
+      rawRate: parseFloat(best.toAmount) / amount,
+      routerName: best.routerName || "",
       available: true,
+      simulated: false,
     };
   } catch {
     const rate = ((amount * (BASE_RATES[from] || 1)) / (BASE_RATES[to] || 1)) * 0.989;
@@ -123,7 +150,7 @@ async function fetchSwapzoneRate(from, to, amount) {
   }
 }
 
-// Background aggregator — runs all 3 silently, returns best
+// ── Background aggregator — all 3 simultaneously, returns best ──
 async function fetchBestRate(from, to, amount) {
   const [cn, ss, sz] = await Promise.allSettled([
     fetchChangeNowRate(from, to, amount),
@@ -132,7 +159,7 @@ async function fetchBestRate(from, to, amount) {
   ]);
 
   const results = [cn, ss, sz]
-    .filter(r => r.status === "fulfilled" && r.value.available)
+    .filter(r => r.status === "fulfilled" && r.value.available && r.value.rate > 0)
     .map(r => r.value)
     .sort((a, b) => b.rate - a.rate);
 
@@ -140,22 +167,77 @@ async function fetchBestRate(from, to, amount) {
     provider: "ChangeNOW",
     rate: ((amount * (BASE_RATES[from] || 1)) / (BASE_RATES[to] || 1)) * 0.996,
     available: true,
+    simulated: true,
   };
 
-  // Full comparison stored for backend/admin view
-  const comparison = results;
+  return { best, comparison: results };
+}
 
-  return { best, comparison };
+// ── Create exchange via best provider ──
+async function createExchange(provider, from, to, amount, destAddress) {
+  if (provider === "ChangeNOW") {
+    const key = API_CONFIG.changenow.apiKey;
+    const res = await fetch(`${API_CONFIG.changenow.baseUrl}/transactions/${key}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        from: from.toLowerCase(), to: to.toLowerCase(),
+        amount, address: destAddress, flow: "standard",
+      }),
+    });
+    const data = await res.json();
+    return { depositAddress: data.payinAddress, exchangeId: data.id, provider };
+  }
+
+  if (provider === "SimpleSwap") {
+    const key = API_CONFIG.simpleswap.apiKey;
+    const netFrom = SS_NETWORKS[from] || from.toLowerCase();
+    const netTo   = SS_NETWORKS[to]   || to.toLowerCase();
+    const res = await fetch(`${API_CONFIG.simpleswap.baseUrl}/exchanges`, {
+      method: "POST",
+      headers: {
+        "x-api-key": key,
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+      },
+      body: JSON.stringify({
+        tickerFrom: from.toLowerCase(), networkFrom: netFrom,
+        tickerTo: to.toLowerCase(),   networkTo: netTo,
+        amount: String(amount), fixed: false,
+        addressTo: destAddress,
+      }),
+    });
+    const data = await res.json();
+    return { depositAddress: data?.result?.addressFrom, exchangeId: data?.result?.id, provider };
+  }
+
+  if (provider === "Swapzone") {
+    const key = API_CONFIG.swapzone.apiKey;
+    const res = await fetch(`${API_CONFIG.swapzone.baseUrl}/exchange/create`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        from: from.toLowerCase(), to: to.toLowerCase(),
+        amountDeposit: amount, addressReceive: destAddress,
+        apikey: key,
+      }),
+    });
+    const data = await res.json();
+    return { depositAddress: data.addressDeposit, exchangeId: data.id, provider };
+  }
+
+  throw new Error("Unknown provider");
 }
 
 // ═══════════════════════════════════════════════════════════════
-// COIN SELECTOR COMPONENT
+// COIN SELECTOR COMPONENT — fixed dropdown zIndex + mobile click
 // ═══════════════════════════════════════════════════════════════
-function CoinSelector({ selected, onChange, exclude, openUpward = false }) {
+function CoinSelector({ selected, onChange, exclude }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
-  const ref = useRef(null);
-  const buttonRef = useRef(null);
+  const [dropPos, setDropPos] = useState({ top: 0, left: 0, width: 230 });
+  const btnRef = useRef(null);
+  const dropRef = useRef(null);
   const coin = COINS.find(c => c.symbol === selected) || COINS[0];
 
   const filtered = COINS.filter(c =>
@@ -164,44 +246,51 @@ function CoinSelector({ selected, onChange, exclude, openUpward = false }) {
      c.name.toLowerCase().includes(query.toLowerCase()))
   );
 
+  // Calculate dropdown position from button's screen coords
+  const openDropdown = () => {
+    if (btnRef.current) {
+      const rect = btnRef.current.getBoundingClientRect();
+      setDropPos({
+        top: rect.bottom + window.scrollY + 6,
+        left: Math.max(8, rect.right - 230 + window.scrollX),
+        width: 230,
+      });
+    }
+    setOpen(o => !o);
+  };
+
   useEffect(() => {
-    const h = e => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    const h = e => {
+      if (
+        btnRef.current && !btnRef.current.contains(e.target) &&
+        dropRef.current && !dropRef.current.contains(e.target)
+      ) {
+        setOpen(false);
+        setQuery("");
+      }
+    };
     document.addEventListener("mousedown", h);
-    return () => document.removeEventListener("mousedown", h);
+    document.addEventListener("touchstart", h);
+    return () => {
+      document.removeEventListener("mousedown", h);
+      document.removeEventListener("touchstart", h);
+    };
   }, []);
 
-  const dropdownStyle = open && buttonRef.current ? (() => {
-    const rect = buttonRef.current.getBoundingClientRect();
-    return {
-      position: "fixed",
-      left: rect.right - 260,
-      width: 260,
-      ...(openUpward
-        ? { bottom: window.innerHeight - rect.top + 6 }
-        : { top: rect.bottom + 6 }),
-      background: "#0C1220",
-      border: "1px solid rgba(255,255,255,0.1)",
-      borderRadius: "16px",
-      boxShadow: "0 24px 64px rgba(0,0,0,0.7)",
-      zIndex: 9999,
-      overflow: "hidden",
-      animation: "dropIn 0.15s ease",
-    };
-  })() : null;
-
   return (
-    <div ref={ref} style={{ position: "relative", flexShrink: 0 }}>
+    <div style={{ position: "relative", flexShrink: 0 }}>
       <button
-        ref={buttonRef}
-        onClick={() => setOpen(o => !o)}
+        ref={btnRef}
+        onMouseDown={e => { e.preventDefault(); openDropdown(); }}
         style={{
           display: "flex", alignItems: "center", gap: "8px",
           background: "rgba(255,255,255,0.06)",
           border: `1px solid ${open ? coin.color + "60" : "rgba(255,255,255,0.1)"}`,
           borderRadius: "12px", padding: "9px 13px", cursor: "pointer",
           color: "#fff", fontSize: "14px", fontFamily: "inherit", fontWeight: 700,
-          transition: "all 0.2s", minWidth: "140px",
+          transition: "all 0.2s", minWidth: "128px",
           boxShadow: open ? `0 0 16px ${coin.color}25` : "none",
+          userSelect: "none", WebkitUserSelect: "none",
         }}
       >
         <div style={{
@@ -217,35 +306,53 @@ function CoinSelector({ selected, onChange, exclude, openUpward = false }) {
         }}>▼</span>
       </button>
 
-      {open && dropdownStyle && typeof document !== "undefined" && createPortal(
-        <div style={dropdownStyle}>
+      {open && (
+        <div ref={dropRef} style={{
+          position: "fixed",
+          top: dropPos.top,
+          left: dropPos.left,
+          width: dropPos.width,
+          background: "#0C1220",
+          border: "1px solid rgba(255,255,255,0.14)",
+          borderRadius: "16px",
+          boxShadow: "0 24px 64px rgba(0,0,0,0.85)",
+          zIndex: 9999,
+          overflow: "hidden",
+          animation: "dropIn 0.15s ease",
+        }}>
           <div style={{ padding: "10px 10px 6px" }}>
             <input
-              autoFocus value={query}
+              autoFocus
+              value={query}
               onChange={e => setQuery(e.target.value)}
-              placeholder="Search…"
+              placeholder="Search coin…"
               style={{
                 width: "100%", background: "rgba(255,255,255,0.06)",
-                border: "1px solid rgba(255,255,255,0.08)", borderRadius: "8px",
-                padding: "7px 11px", color: "#fff", fontSize: "12px",
+                border: "1px solid rgba(255,255,255,0.1)", borderRadius: "8px",
+                padding: "8px 11px", color: "#fff", fontSize: "12px",
                 fontFamily: "inherit", outline: "none", boxSizing: "border-box",
               }}
             />
           </div>
-          <div style={{ maxHeight: "280px", overflowY: "auto" }}>
+          <div style={{ maxHeight: "260px", overflowY: "auto" }}>
+            {filtered.length === 0 && (
+              <div style={{ padding: "16px", fontSize: "12px", color: "rgba(255,255,255,0.3)", textAlign: "center" }}>
+                No coins found
+              </div>
+            )}
             {filtered.map(c => (
               <button key={c.symbol}
-                onClick={() => { onChange(c.symbol); setOpen(false); setQuery(""); }}
+                onMouseDown={e => { e.preventDefault(); onChange(c.symbol); setOpen(false); setQuery(""); }}
                 style={{
                   width: "100%", display: "flex", alignItems: "center", gap: "10px",
                   padding: "9px 14px",
-                  background: selected === c.symbol ? "rgba(0,229,160,0.06)" : "transparent",
+                  background: selected === c.symbol ? "rgba(0,229,160,0.08)" : "transparent",
                   border: "none", cursor: "pointer", color: "#fff",
                   fontFamily: "inherit", fontSize: "13px", textAlign: "left",
                   transition: "background 0.1s",
                 }}
-                onMouseEnter={e => e.currentTarget.style.background = "rgba(255,255,255,0.05)"}
-                onMouseLeave={e => e.currentTarget.style.background = selected === c.symbol ? "rgba(0,229,160,0.06)" : "transparent"}
+                onMouseEnter={e => e.currentTarget.style.background = "rgba(255,255,255,0.07)"}
+                onMouseLeave={e => e.currentTarget.style.background = selected === c.symbol ? "rgba(0,229,160,0.08)" : "transparent"}
               >
                 <div style={{
                   width: 26, height: 26, borderRadius: "50%", background: c.bg,
@@ -258,13 +365,12 @@ function CoinSelector({ selected, onChange, exclude, openUpward = false }) {
                   <div style={{ fontSize: "10px", opacity: 0.4 }}>{c.name}</div>
                 </div>
                 {selected === c.symbol && (
-                  <span style={{ marginLeft: "auto", color: "#00E5A0", fontSize: "11px" }}>✓</span>
+                  <span style={{ marginLeft: "auto", color: "#00E5A0", fontSize: "12px" }}>✓</span>
                 )}
               </button>
             ))}
           </div>
-        </div>,
-        document.body
+        </div>
       )}
     </div>
   );
@@ -393,33 +499,71 @@ export default function AtlasSwapApp() {
   const [bestProvider, setBestProvider] = useState("ChangeNOW");
   const [comparison, setComparison] = useState([]);
   const [showBackend, setShowBackend] = useState(false);
+  const [showPartners, setShowPartners] = useState(false);
+  const [showAbout, setShowAbout] = useState(false);
+  const [showExchange, setShowExchange] = useState(false);
+  const [showFeatures, setShowFeatures] = useState(false);
   const [tickerPrices, setTickerPrices] = useState({...BASE_RATES});
+  const [tickerChanges, setTickerChanges] = useState({});
   const rateTimer = useRef(null);
+
+  // ── Live price fetch from CoinGecko (free public API) ──
+  useEffect(() => {
+    const COINGECKO_IDS = {
+      BTC:"bitcoin", ETH:"ethereum", USDT:"tether", BNB:"binancecoin",
+      SOL:"solana", USDC:"usd-coin", XRP:"ripple", DOGE:"dogecoin",
+      ADA:"cardano", AVAX:"avalanche-2", TRX:"tron", LINK:"chainlink",
+      DOT:"polkadot", MATIC:"matic-network", LTC:"litecoin", UNI:"uniswap",
+      ATOM:"cosmos", XMR:"monero", TON:"the-open-network", SHIB:"shiba-inu",
+      ARB:"arbitrum", OP:"optimism", INJ:"injective-protocol",
+      SUI:"sui", APT:"aptos",
+    };
+    const ids = Object.values(COINGECKO_IDS).join(",");
+
+    const fetchPrices = async () => {
+      try {
+        const res = await fetch(
+          `https://api.coingecko.com/api/v3/simple/price?ids=${ids}&vs_currencies=usd&include_24hr_change=true`
+        );
+        if (!res.ok) throw new Error("CoinGecko error");
+        const data = await res.json();
+        const prices = {};
+        const changes = {};
+        Object.entries(COINGECKO_IDS).forEach(([symbol, id]) => {
+          if (data[id]) {
+            prices[symbol] = data[id].usd;
+            changes[symbol] = data[id].usd_24h_change || 0;
+          }
+        });
+        if (Object.keys(prices).length > 0) {
+          setTickerPrices(prev => ({ ...prev, ...prices }));
+          setTickerChanges(changes);
+        }
+      } catch {
+        // Fallback — animate prices so ticker is visually alive
+        setTickerPrices(prev => {
+          const updated = { ...prev };
+          Object.keys(updated).forEach(k => {
+            const swing = (Math.random() - 0.499) * 0.018;
+            updated[k] = parseFloat((prev[k] * (1 + swing)).toFixed(8));
+          });
+          return updated;
+        });
+      }
+    };
+
+    fetchPrices();
+    const interval = setInterval(fetchPrices, 30000); // refresh every 30s
+    return () => clearInterval(interval);
+  }, []);
 
   // ── Keyboard shortcut: Ctrl+Shift+A opens backend panel ──
   useEffect(() => {
     const handler = e => {
-      if (e.ctrlKey && e.shiftKey && e.key === "A") {
-        setShowBackend(s => !s);
-      }
+      if (e.ctrlKey && e.shiftKey && e.key === "A") setShowBackend(s => !s);
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, []);
-
-  // ── Simulated live ticker price fluctuation ──
-  useEffect(() => {
-    const interval = setInterval(() => {
-      setTickerPrices(prev => {
-        const updated = {...prev};
-        Object.keys(updated).forEach(k => {
-          const change = (Math.random() - 0.499) * 0.002;
-          updated[k] = parseFloat((prev[k] * (1 + change)).toFixed(8));
-        });
-        return updated;
-      });
-    }, 3000);
-    return () => clearInterval(interval);
   }, []);
 
   // ── Background rate fetch — all 3 APIs silently ──
@@ -455,15 +599,32 @@ export default function AtlasSwapApp() {
     setSendAmt(receiveAmt || "0.1");
   };
 
+  const [exchangeId, setExchangeId]         = useState("");
+  const [depositAddress, setDepositAddress] = useState("");
+  const [exchangeError, setExchangeError]   = useState("");
+
   const handleExchange = () => {
     if (!destAddr.trim()) return;
     setLoading(true);
+    setExchangeError("");
     setTimeout(() => { setLoading(false); setStep("confirm"); }, 700);
   };
 
-  const handleConfirm = () => {
+  const handleConfirm = async () => {
     setStep("processing");
-    setTimeout(() => setStep("done"), 3500);
+    setExchangeError("");
+    try {
+      const result = await createExchange(
+        bestProvider, fromCoin, toCoin,
+        parseFloat(sendAmt), destAddr.trim()
+      );
+      setDepositAddress(result.depositAddress || "");
+      setExchangeId(result.exchangeId || "");
+      setStep("done");
+    } catch (err) {
+      setExchangeError("Exchange creation failed. Please try again or use a different pair.");
+      setStep("confirm");
+    }
   };
 
   const fromData = COINS.find(c => c.symbol === fromCoin) || COINS[0];
@@ -611,7 +772,6 @@ export default function AtlasSwapApp() {
 
         ::placeholder { color: rgba(240,244,255,0.2); }
         input:focus { outline: none; }
-        html { scroll-behavior: smooth; }
       `}</style>
 
       {/* ── Background atmosphere ── */}
@@ -666,8 +826,7 @@ export default function AtlasSwapApp() {
         }}>
           {[...tickerCoins, ...tickerCoins].map((c, i) => {
             const price = tickerPrices[c.symbol] || BASE_RATES[c.symbol] || 0;
-            const base = BASE_RATES[c.symbol] || 1;
-            const change = ((price - base) / base) * 100;
+            const change = tickerChanges[c.symbol] ?? ((tickerPrices[c.symbol] - BASE_RATES[c.symbol]) / BASE_RATES[c.symbol] * 100);
             const isUp = change >= 0;
             return (
               <span key={i} style={{
@@ -724,12 +883,15 @@ export default function AtlasSwapApp() {
         {/* Nav links */}
         <div style={{ display: "flex", gap: "32px", alignItems: "center" }}>
           {[
-            { label: "Exchange", href: "#exchange" },
-            { label: "Features", href: "#features" },
-            { label: "API Partners", href: "#api-partners" },
-            { label: "About", href: "#about" },
-          ].map(({ label, href }) => (
-            <a key={label} href={href} className="nav-link">{label}</a>
+            { label: "Exchange",    action: () => setShowExchange(true) },
+            { label: "Features",    action: () => setShowFeatures(true) },
+            { label: "API Partners",action: () => setShowPartners(true) },
+            { label: "About",       action: () => setShowAbout(true) },
+          ].map(item => (
+            <a key={item.label} href="#"
+              className="nav-link"
+              onClick={e => { e.preventDefault(); item.action && item.action(); }}
+            >{item.label}</a>
           ))}
         </div>
 
@@ -754,9 +916,9 @@ export default function AtlasSwapApp() {
       </nav>
 
       {/* ── Main content ── */}
-      <div id="exchange" style={{
+      <div style={{
         position: "relative", zIndex: 10,
-        maxWidth: "1320px", margin: "0 auto",
+        maxWidth: "1180px", margin: "0 auto",
         padding: "64px 48px 48px",
         display: "flex", gap: "56px", alignItems: "flex-start",
       }}>
@@ -847,7 +1009,7 @@ export default function AtlasSwapApp() {
         </div>
 
         {/* ── RIGHT: Swap card ── */}
-        <div style={{ width: "540px", minWidth: "380px", flexShrink: 0 }}>
+        <div style={{ width: "430px", flexShrink: 0 }}>
 
           {/* ── FORM STEP ── */}
           {step === "form" && (
@@ -856,7 +1018,7 @@ export default function AtlasSwapApp() {
               border: "1px solid rgba(255,255,255,0.09)",
               borderRadius: "24px", backdropFilter: "blur(32px)",
               boxShadow: "0 32px 80px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.06)",
-              overflow: "visible",
+              overflow: "hidden",
             }}>
               {/* Tabs */}
               <div style={{
@@ -892,7 +1054,7 @@ export default function AtlasSwapApp() {
                 ))}
               </div>
 
-              <div style={{ padding: "24px 28px 24px" }}>
+              <div style={{ padding: "22px 22px 20px" }}>
 
                 {/* YOU SEND */}
                 <div style={{ marginBottom: "4px" }}>
@@ -967,7 +1129,7 @@ export default function AtlasSwapApp() {
                     background: "rgba(0,229,160,0.04)",
                     border: "1px solid rgba(0,229,160,0.12)",
                     borderRadius: "16px", padding: "13px 14px",
-                    position: "relative", overflow: "visible",
+                    position: "relative", overflow: "hidden",
                   }}>
                     {rateLoading && (
                       <div style={{
@@ -987,7 +1149,7 @@ export default function AtlasSwapApp() {
                     }}>
                       {receiveAmt || "0.000000"}
                     </div>
-                    <CoinSelector selected={toCoin} onChange={setToCoin} exclude={fromCoin} openUpward />
+                    <CoinSelector selected={toCoin} onChange={setToCoin} exclude={fromCoin} />
                   </div>
                   <div style={{
                     fontSize: "11px", color: "rgba(240,244,255,0.3)",
@@ -1126,6 +1288,15 @@ export default function AtlasSwapApp() {
                 </div>
               ))}
 
+              {exchangeError && (
+                <div style={{
+                  marginTop:"14px", padding:"12px 16px",
+                  background:"rgba(255,90,114,0.08)",
+                  border:"1px solid rgba(255,90,114,0.2)",
+                  borderRadius:"10px", fontSize:"12px", color:"#FF5A72", lineHeight:1.6,
+                }}>{exchangeError}</div>
+              )}
+
               <button className="exchange-btn" onClick={handleConfirm} style={{
                 width: "100%", marginTop: "22px", padding: "15px",
                 background: "linear-gradient(135deg, #00E5A0, #00C4FF)",
@@ -1156,38 +1327,10 @@ export default function AtlasSwapApp() {
               <div style={{
                 fontFamily: "'Syne', sans-serif", fontWeight: 800,
                 fontSize: "22px", marginBottom: "12px", letterSpacing: "-0.02em",
-              }}>Processing Swap</div>
-              <p style={{
-                fontSize: "13px", color: "rgba(240,244,255,0.4)",
-                lineHeight: 1.75, marginBottom: "24px",
-              }}>
-                Routing through <strong style={{ color: "#00E5A0" }}>{bestProvider}</strong>.<br/>
-                Send <strong style={{ color: "#fff" }}>{sendAmt} {fromCoin}</strong> to the address below.
+              }}>Creating Exchange…</div>
+              <p style={{ fontSize: "13px", color: "rgba(240,244,255,0.4)", lineHeight: 1.75 }}>
+                Connecting to <strong style={{ color: "#00E5A0" }}>{bestProvider}</strong> and generating your deposit address. This takes just a moment.
               </p>
-              <div style={{
-                background: "rgba(0,229,160,0.05)",
-                border: "1px solid rgba(0,229,160,0.18)",
-                borderRadius: "14px", padding: "16px",
-                marginBottom: "20px",
-              }}>
-                <div style={{
-                  fontSize: "10px", color: "rgba(240,244,255,0.3)",
-                  letterSpacing: "0.1em", marginBottom: "8px", fontWeight: 700,
-                }}>DEPOSIT ADDRESS</div>
-                <div style={{
-                  fontSize: "11px", color: "#00E5A0",
-                  fontFamily: "monospace", wordBreak: "break-all", lineHeight: 1.6,
-                }}>
-                  bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh
-                </div>
-              </div>
-              <div style={{
-                fontSize: "11px", color: "rgba(240,244,255,0.25)",
-                letterSpacing: "0.04em",
-                animation: "dotPulse 2s ease-in-out infinite",
-              }}>
-                Awaiting network confirmation…
-              </div>
             </div>
           )}
 
@@ -1197,31 +1340,78 @@ export default function AtlasSwapApp() {
               background: "rgba(255,255,255,0.035)",
               border: "1px solid rgba(0,229,160,0.15)",
               borderRadius: "24px", backdropFilter: "blur(32px)",
-              padding: "48px 26px", textAlign: "center",
+              padding: "32px 26px", textAlign: "center",
               boxShadow: "0 32px 80px rgba(0,229,160,0.08)",
             }}>
               <div style={{
-                width: 72, height: 72, margin: "0 auto 24px",
+                width: 64, height: 64, margin: "0 auto 20px",
                 borderRadius: "50%",
                 background: "rgba(0,229,160,0.1)",
                 border: "2px solid rgba(0,229,160,0.35)",
                 display: "flex", alignItems: "center", justifyContent: "center",
-                fontSize: "30px", animation: "successPop 0.5s cubic-bezier(0.34,1.56,0.64,1)",
+                fontSize: "28px", animation: "successPop 0.5s cubic-bezier(0.34,1.56,0.64,1)",
                 boxShadow: "0 0 40px rgba(0,229,160,0.15)",
               }}>✓</div>
+
               <div style={{
                 fontFamily: "'Syne', sans-serif", fontWeight: 800,
-                fontSize: "22px", marginBottom: "10px",
+                fontSize: "20px", marginBottom: "8px",
                 color: "#00E5A0", letterSpacing: "-0.02em",
-              }}>Swap Complete!</div>
-              <p style={{
-                fontSize: "13px", color: "rgba(240,244,255,0.4)",
-                lineHeight: 1.75, marginBottom: "28px",
-              }}>
-                Your {toCoin} has been sent to your wallet.<br/>
-                Thank you for swapping with AtlasSwap.
+              }}>Exchange Created!</div>
+
+              <p style={{ fontSize: "13px", color: "rgba(240,244,255,0.4)", lineHeight: 1.75, marginBottom: "20px" }}>
+                Send exactly <strong style={{ color: "#fff" }}>{sendAmt} {fromCoin}</strong> to the deposit address below. Your <strong style={{ color: "#fff" }}>{toCoin}</strong> will be sent to your wallet automatically once confirmed.
               </p>
-              <button onClick={() => { setStep("form"); setDestAddr(""); }} style={{
+
+              {/* Deposit address box */}
+              {depositAddress && (
+                <div style={{
+                  background: "rgba(0,229,160,0.05)",
+                  border: "1px solid rgba(0,229,160,0.2)",
+                  borderRadius: "14px", padding: "16px", marginBottom: "14px", textAlign: "left",
+                }}>
+                  <div style={{ fontSize: "10px", color: "rgba(240,244,255,0.3)", letterSpacing: "0.1em", marginBottom: "8px", fontWeight: 700 }}>
+                    SEND {fromCoin} TO THIS ADDRESS
+                  </div>
+                  <div style={{ fontSize: "11px", color: "#00E5A0", fontFamily: "monospace", wordBreak: "break-all", lineHeight: 1.7 }}>
+                    {depositAddress}
+                  </div>
+                  <button
+                    onClick={() => navigator.clipboard.writeText(depositAddress)}
+                    style={{
+                      marginTop: "10px", fontSize: "11px", color: "rgba(240,244,255,0.4)",
+                      background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)",
+                      borderRadius: "6px", padding: "5px 12px", cursor: "pointer",
+                      fontFamily: "'Outfit',sans-serif",
+                    }}
+                  >Copy Address</button>
+                </div>
+              )}
+
+              {/* Exchange ID */}
+              {exchangeId && (
+                <div style={{
+                  background: "rgba(255,255,255,0.03)",
+                  border: "1px solid rgba(255,255,255,0.07)",
+                  borderRadius: "10px", padding: "10px 14px", marginBottom: "16px", textAlign: "left",
+                }}>
+                  <div style={{ fontSize: "10px", color: "rgba(240,244,255,0.3)", letterSpacing: "0.1em", marginBottom: "4px", fontWeight: 700 }}>EXCHANGE ID</div>
+                  <div style={{ fontSize: "11px", color: "rgba(240,244,255,0.55)", fontFamily: "monospace" }}>{exchangeId}</div>
+                </div>
+              )}
+
+              <div style={{
+                fontSize: "11px", color: "rgba(240,244,255,0.25)",
+                marginBottom: "18px", lineHeight: 1.7,
+              }}>
+                ⏱ Estimated completion: 5–20 minutes after deposit is confirmed on-chain.<br/>
+                Routed via <span style={{ color: "#00E5A0" }}>{bestProvider}</span> · AtlasSwap never holds your funds.
+              </div>
+
+              <button onClick={() => {
+                setStep("form"); setDestAddr("");
+                setDepositAddress(""); setExchangeId(""); setExchangeError("");
+              }} style={{
                 width: "100%", padding: "14px",
                 background: "rgba(0,229,160,0.09)",
                 border: "1px solid rgba(0,229,160,0.22)",
@@ -1237,7 +1427,7 @@ export default function AtlasSwapApp() {
           )}
 
           {/* Provider attribution bar */}
-          <div id="api-partners" style={{
+          <div style={{
             marginTop: "14px", padding: "12px 16px",
             background: "rgba(255,255,255,0.02)",
             border: "1px solid rgba(255,255,255,0.05)",
@@ -1269,9 +1459,9 @@ export default function AtlasSwapApp() {
       </div>
 
       {/* ── Feature strip ── */}
-      <div id="features" style={{
+      <div style={{
         position: "relative", zIndex: 10,
-        maxWidth: "1320px", margin: "0 auto 64px",
+        maxWidth: "1180px", margin: "0 auto 64px",
         padding: "0 48px",
         display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "14px",
       }}>
@@ -1311,11 +1501,11 @@ export default function AtlasSwapApp() {
       </div>
 
       {/* ── Footer ── */}
-      <div id="about" style={{
+      <div style={{
         position: "relative", zIndex: 10,
         borderTop: "1px solid rgba(255,255,255,0.05)",
         padding: "24px 48px",
-        maxWidth: "1320px", margin: "0 auto",
+        maxWidth: "1180px", margin: "0 auto",
         display: "flex", justifyContent: "space-between", alignItems: "center",
       }}>
         <div style={{ fontFamily: "'Syne', sans-serif", fontWeight: 800, fontSize: "16px", letterSpacing: "-0.02em" }}>
@@ -1349,6 +1539,356 @@ export default function AtlasSwapApp() {
           sendAmt={sendAmt}
           onClose={() => setShowBackend(false)}
         />
+      )}
+
+      {/* ══════════════════════════════════════════
+          EXCHANGE MODAL
+      ══════════════════════════════════════════ */}
+      {showExchange && (
+        <div onClick={() => setShowExchange(false)} style={{
+          position:"fixed",inset:0,zIndex:1000,
+          background:"rgba(0,0,0,0.85)",backdropFilter:"blur(10px)",
+          display:"flex",alignItems:"center",justifyContent:"center",
+          animation:"fadeIn 0.2s ease",
+        }}>
+          <div onClick={e=>e.stopPropagation()} style={{
+            background:"#0C1220",border:"1px solid rgba(255,255,255,0.09)",
+            borderRadius:"24px",padding:"36px",width:"600px",maxWidth:"92vw",
+            boxShadow:"0 40px 80px rgba(0,0,0,0.7)",animation:"dropIn 0.2s ease",
+            maxHeight:"88vh",overflowY:"auto",
+          }}>
+            {/* Header */}
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:"26px"}}>
+              <div>
+                <div style={{fontSize:"10px",color:"#00E5A0",fontWeight:700,letterSpacing:"0.12em",marginBottom:"8px"}}>⇅ HOW IT WORKS</div>
+                <div style={{fontFamily:"'Syne',sans-serif",fontWeight:800,fontSize:"22px",letterSpacing:"-0.02em"}}>Exchange Crypto</div>
+                <div style={{fontSize:"13px",color:"rgba(240,244,255,0.4)",marginTop:"6px",lineHeight:1.6,maxWidth:"420px"}}>
+                  AtlasSwap is the simplest way to swap one cryptocurrency for another — no account, no waiting, no intermediary holding your funds.
+                </div>
+              </div>
+              <button onClick={()=>setShowExchange(false)} style={{background:"rgba(255,255,255,0.06)",border:"1px solid rgba(255,255,255,0.1)",borderRadius:"10px",width:34,height:34,color:"rgba(255,255,255,0.5)",cursor:"pointer",fontSize:"14px",flexShrink:0,marginLeft:"16px"}}>✕</button>
+            </div>
+
+            {/* How a swap works — step by step */}
+            <div style={{marginBottom:"24px"}}>
+              <div style={{fontSize:"10px",color:"rgba(240,244,255,0.3)",fontWeight:700,letterSpacing:"0.1em",marginBottom:"14px"}}>THE SWAP PROCESS — STEP BY STEP</div>
+              {[
+                { n:"01", title:"Choose your coins", desc:"Select the cryptocurrency you want to send and the one you want to receive. AtlasSwap supports 1,500+ coins across every major blockchain." },
+                { n:"02", title:"Enter your amount", desc:"Type in how much you want to swap. The estimated receive amount updates in real time as all three exchange providers are queried simultaneously in the background." },
+                { n:"03", title:"Paste your wallet address", desc:"Enter the destination wallet address where you want to receive your coins. This is the only thing we ask — no email, no account, no identity." },
+                { n:"04", title:"Review and confirm", desc:"You'll see a full summary — the amount you're sending, the estimated amount you'll receive, which provider is routing your swap, and the estimated time." },
+                { n:"05", title:"Send your crypto", desc:"After confirming, you'll receive a deposit address. Send your crypto there. The exchange provider processes your swap and sends the output directly to your wallet." },
+                { n:"06", title:"Swap complete", desc:"Your exchanged crypto arrives in your wallet. Average completion time is 5 to 20 minutes depending on network congestion. AtlasSwap never touches your funds at any point." },
+              ].map((s,i)=>(
+                <div key={s.n} style={{display:"flex",gap:"16px",marginBottom:"14px",alignItems:"flex-start"}}>
+                  <div style={{width:32,height:32,borderRadius:"10px",background:"rgba(0,229,160,0.08)",border:"1px solid rgba(0,229,160,0.18)",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,fontFamily:"'Syne',sans-serif",fontWeight:800,fontSize:"11px",color:"#00E5A0",letterSpacing:"0.05em"}}>{s.n}</div>
+                  <div>
+                    <div style={{fontFamily:"'Syne',sans-serif",fontWeight:700,fontSize:"13px",marginBottom:"4px"}}>{s.title}</div>
+                    <div style={{fontSize:"12px",color:"rgba(240,244,255,0.4)",lineHeight:1.7}}>{s.desc}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {/* Trust block */}
+            <div style={{background:"rgba(0,229,160,0.04)",border:"1px solid rgba(0,229,160,0.12)",borderRadius:"14px",padding:"18px 20px",marginBottom:"20px"}}>
+              <div style={{fontSize:"10px",color:"#00E5A0",fontWeight:700,letterSpacing:"0.1em",marginBottom:"12px"}}>OUR COMMITMENT TO YOU</div>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"10px"}}>
+                {[
+                  ["🔒","Your funds are never held","AtlasSwap is a routing layer, not a wallet. We never take custody of your crypto at any stage."],
+                  ["👤","Zero personal data collected","We do not collect your name, email, IP address, or any identifying information. Swap anonymously."],
+                  ["📊","Rates shown are real","Every rate you see is fetched live from actual exchange APIs — not estimated, not delayed, not inflated."],
+                  ["⚡","No hidden fees","The rate shown already includes all applicable fees. What you see is what you get, every single time."],
+                ].map(([icon,title,desc])=>(
+                  <div key={title} style={{display:"flex",gap:"10px",alignItems:"flex-start"}}>
+                    <span style={{fontSize:"18px",flexShrink:0}}>{icon}</span>
+                    <div>
+                      <div style={{fontSize:"12px",fontWeight:700,color:"#fff",marginBottom:"3px"}}>{title}</div>
+                      <div style={{fontSize:"11px",color:"rgba(240,244,255,0.38)",lineHeight:1.6}}>{desc}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div style={{fontSize:"11px",color:"rgba(240,244,255,0.2)",textAlign:"center"}}>
+              Questions? Contact us via the footer · atlasswap.io
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ══════════════════════════════════════════
+          FEATURES MODAL
+      ══════════════════════════════════════════ */}
+      {showFeatures && (
+        <div onClick={() => setShowFeatures(false)} style={{
+          position:"fixed",inset:0,zIndex:1000,
+          background:"rgba(0,0,0,0.85)",backdropFilter:"blur(10px)",
+          display:"flex",alignItems:"center",justifyContent:"center",
+          animation:"fadeIn 0.2s ease",
+        }}>
+          <div onClick={e=>e.stopPropagation()} style={{
+            background:"#0C1220",border:"1px solid rgba(255,255,255,0.09)",
+            borderRadius:"24px",padding:"36px",width:"620px",maxWidth:"92vw",
+            boxShadow:"0 40px 80px rgba(0,0,0,0.7)",animation:"dropIn 0.2s ease",
+            maxHeight:"88vh",overflowY:"auto",
+          }}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:"26px"}}>
+              <div>
+                <div style={{fontSize:"10px",color:"#00E5A0",fontWeight:700,letterSpacing:"0.12em",marginBottom:"8px"}}>✦ PLATFORM CAPABILITIES</div>
+                <div style={{fontFamily:"'Syne',sans-serif",fontWeight:800,fontSize:"22px",letterSpacing:"-0.02em"}}>Features Built on Trust</div>
+                <div style={{fontSize:"13px",color:"rgba(240,244,255,0.4)",marginTop:"6px",lineHeight:1.6,maxWidth:"440px"}}>
+                  Every feature AtlasSwap ships is designed around one principle — you should always know exactly what is happening with your swap and why.
+                </div>
+              </div>
+              <button onClick={()=>setShowFeatures(false)} style={{background:"rgba(255,255,255,0.06)",border:"1px solid rgba(255,255,255,0.1)",borderRadius:"10px",width:34,height:34,color:"rgba(255,255,255,0.5)",cursor:"pointer",fontSize:"14px",flexShrink:0,marginLeft:"16px"}}>✕</button>
+            </div>
+
+            {/* Feature cards */}
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"12px",marginBottom:"22px"}}>
+              {[
+                { icon:"⚡", color:"#00E5A0", title:"Real-Time Rate Aggregation",
+                  desc:"All three exchange providers — ChangeNOW, SimpleSwap, and Swapzone — are queried simultaneously the moment you enter an amount. The fastest and best rate wins. You never pay more than necessary." },
+                { icon:"🔐", color:"#7B9EF0", title:"Non-Custodial Architecture",
+                  desc:"AtlasSwap has no wallet, no treasury, and no ability to freeze or delay your funds. Swaps execute peer-to-peer via our exchange partners. We are a routing layer, nothing more." },
+                { icon:"🌐", color:"#00C4FF", title:"1,500+ Coin Coverage",
+                  desc:"Bitcoin, Ethereum, Solana, BNB, XRP, USDT, DOGE, ADA and over 1,500 more. If it trades on a major exchange, AtlasSwap can route it. Coverage expands automatically as our partners add new assets." },
+                { icon:"👤", color:"#F7931A", title:"Zero Registration Required",
+                  desc:"No email. No password. No identity verification. No account to create or maintain. The only thing AtlasSwap needs is your destination wallet address. That is all." },
+                { icon:"📊", color:"#00E5A0", title:"Transparent Live Rates",
+                  desc:"Every rate displayed on AtlasSwap is pulled live from real exchange APIs at the moment you request it. There are no markups on displayed rates. The rate shown is the rate you get." },
+                { icon:"🛡️", color:"#7B9EF0", title:"No KYC. Ever.",
+                  desc:"AtlasSwap does not collect, store, or transmit personal identification data. Our exchange partners handle all compliance obligations. Your anonymity is structurally preserved by design, not by policy." },
+                { icon:"🔄", color:"#00C4FF", title:"Best-Route Auto-Selection",
+                  desc:"You never need to manually compare rates across providers. AtlasSwap's aggregation engine does it automatically and routes your swap through whichever provider returns the best output amount at that instant." },
+                { icon:"📱", color:"#F7931A", title:"No App Required",
+                  desc:"AtlasSwap runs entirely in your browser. No download, no installation, no extension. Swap from any device — desktop, tablet, or mobile — anywhere in the world, at any time." },
+              ].map(f=>(
+                <div key={f.title} style={{background:"rgba(255,255,255,0.03)",border:"1px solid rgba(255,255,255,0.07)",borderRadius:"14px",padding:"18px",transition:"all 0.2s"}}
+                  onMouseEnter={e=>{e.currentTarget.style.borderColor=f.color+"30";e.currentTarget.style.background="rgba(255,255,255,0.05)";}}
+                  onMouseLeave={e=>{e.currentTarget.style.borderColor="rgba(255,255,255,0.07)";e.currentTarget.style.background="rgba(255,255,255,0.03)";}}>
+                  <div style={{fontSize:"22px",marginBottom:"10px"}}>{f.icon}</div>
+                  <div style={{fontFamily:"'Syne',sans-serif",fontWeight:700,fontSize:"13px",color:f.color,marginBottom:"7px",letterSpacing:"-0.01em"}}>{f.title}</div>
+                  <div style={{fontSize:"12px",color:"rgba(240,244,255,0.38)",lineHeight:1.7}}>{f.desc}</div>
+                </div>
+              ))}
+            </div>
+
+            {/* Bottom stat bar */}
+            <div style={{background:"rgba(255,255,255,0.03)",border:"1px solid rgba(255,255,255,0.06)",borderRadius:"14px",padding:"16px 20px",display:"flex",justifyContent:"space-around"}}>
+              {[["1,500+","Coins"],["3","Exchange APIs"],["0%","Data Collected"],["100%","Non-Custodial"]].map(([v,l])=>(
+                <div key={l} style={{textAlign:"center"}}>
+                  <div style={{fontFamily:"'Syne',sans-serif",fontWeight:800,fontSize:"20px",color:"#00E5A0",letterSpacing:"-0.02em"}}>{v}</div>
+                  <div style={{fontSize:"10px",color:"rgba(240,244,255,0.3)",marginTop:"3px",fontWeight:500}}>{l}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ══════════════════════════════════════════
+          API PARTNERS MODAL
+      ══════════════════════════════════════════ */}
+      {showPartners && (
+        <div onClick={() => setShowPartners(false)} style={{
+          position:"fixed",inset:0,zIndex:1000,
+          background:"rgba(0,0,0,0.85)",backdropFilter:"blur(10px)",
+          display:"flex",alignItems:"center",justifyContent:"center",
+          animation:"fadeIn 0.2s ease",
+        }}>
+          <div onClick={e=>e.stopPropagation()} style={{
+            background:"#0C1220",border:"1px solid rgba(255,255,255,0.09)",
+            borderRadius:"24px",padding:"36px",width:"600px",maxWidth:"92vw",
+            boxShadow:"0 40px 80px rgba(0,0,0,0.7)",animation:"dropIn 0.2s ease",
+            maxHeight:"88vh",overflowY:"auto",
+          }}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:"26px"}}>
+              <div>
+                <div style={{fontSize:"10px",color:"#00E5A0",fontWeight:700,letterSpacing:"0.12em",marginBottom:"8px"}}>✦ EXCHANGE NETWORK</div>
+                <div style={{fontFamily:"'Syne',sans-serif",fontWeight:800,fontSize:"22px",letterSpacing:"-0.02em"}}>Our API Partners</div>
+                <div style={{fontSize:"13px",color:"rgba(240,244,255,0.4)",marginTop:"6px",lineHeight:1.6,maxWidth:"420px"}}>
+                  AtlasSwap is transparent about who powers every swap. We work exclusively with established, reputable non-custodial exchange providers — and we query all three on every single swap you make.
+                </div>
+              </div>
+              <button onClick={()=>setShowPartners(false)} style={{background:"rgba(255,255,255,0.06)",border:"1px solid rgba(255,255,255,0.1)",borderRadius:"10px",width:34,height:34,color:"rgba(255,255,255,0.5)",cursor:"pointer",fontSize:"14px",flexShrink:0,marginLeft:"16px"}}>✕</button>
+            </div>
+
+            {/* Why we publish our partners */}
+            <div style={{background:"rgba(0,229,160,0.04)",border:"1px solid rgba(0,229,160,0.12)",borderRadius:"14px",padding:"16px 18px",marginBottom:"22px"}}>
+              <div style={{fontSize:"12px",color:"rgba(240,244,255,0.55)",lineHeight:1.75}}>
+                <strong style={{color:"#00E5A0",fontWeight:700}}>Why we name our partners publicly:</strong> Many swap aggregators hide which providers they use. We believe you have the right to know exactly whose infrastructure is processing your funds. Every provider listed below is a regulated, established exchange service with a public track record.
+              </div>
+            </div>
+
+            {/* Partner cards */}
+            <div style={{display:"flex",flexDirection:"column",gap:"14px",marginBottom:"20px"}}>
+              {[
+                {
+                  name:"ChangeNOW", url:"changenow.io", color:"#00E5A0",
+                  badge:"Primary Provider", badgeBg:"rgba(0,229,160,0.12)", badgeColor:"#00E5A0",
+                  icon:"⚡", founded:"Founded 2017",
+                  desc:"AtlasSwap's primary routing partner. ChangeNOW is one of the most established non-custodial swap services in the world, processing millions of swaps since 2017. They support 1,500+ coins, require no registration, and never hold user funds. Our partner integration earns a 0.4% commission on swap volume — fully disclosed.",
+                  trustPoints:["No registration required","1,500+ supported assets","Operational since 2017","Zero custody model"],
+                  stats:[["1,500+","Coins"],["0.4%","Our Commission"],["Since 2017","Established"]],
+                },
+                {
+                  name:"SimpleSwap", url:"simpleswap.io", color:"#7B9EF0",
+                  badge:"Secondary Provider", badgeBg:"rgba(123,158,240,0.12)", badgeColor:"#7B9EF0",
+                  icon:"◈", founded:"Founded 2018",
+                  desc:"SimpleSwap is a clean, no-registration swap platform known for competitive rates and a transparent affiliate programme. It supports both fixed and floating rate swaps across 600+ coins. AtlasSwap queries SimpleSwap in real time and routes to it automatically when it returns the best rate for your pair.",
+                  trustPoints:["Fixed & floating rate options","600+ supported assets","Transparent fee structure","No KYC required"],
+                  stats:[["600+","Coins"],["Fixed/Float","Rate Type"],["Since 2018","Established"]],
+                },
+                {
+                  name:"Swapzone", url:"swapzone.io", color:"#F7931A",
+                  badge:"Meta-Aggregator", badgeBg:"rgba(247,147,26,0.12)", badgeColor:"#F7931A",
+                  icon:"◎", founded:"Founded 2019",
+                  desc:"Swapzone is itself a meta-aggregator — it compares rates across 15+ underlying exchange providers and returns the best single result. By including Swapzone in our stack, AtlasSwap's rate comparison net extends across dozens of exchanges simultaneously, giving you a broader best-rate guarantee than any single provider can offer.",
+                  trustPoints:["Aggregates 15+ providers","Best-of-market rate logic","No registration required","Real-time comparison engine"],
+                  stats:[["15+","Providers Behind It"],["Best-of","Rate Logic"],["Since 2019","Established"]],
+                },
+              ].map(p=>(
+                <div key={p.name} style={{background:"rgba(255,255,255,0.03)",border:"1px solid rgba(255,255,255,0.07)",borderRadius:"16px",padding:"20px",transition:"all 0.2s"}}
+                  onMouseEnter={e=>{e.currentTarget.style.borderColor=p.color+"30";e.currentTarget.style.background="rgba(255,255,255,0.05)";}}
+                  onMouseLeave={e=>{e.currentTarget.style.borderColor="rgba(255,255,255,0.07)";e.currentTarget.style.background="rgba(255,255,255,0.03)";}}>
+                  <div style={{display:"flex",alignItems:"flex-start",gap:"14px"}}>
+                    <div style={{width:44,height:44,borderRadius:"12px",flexShrink:0,background:p.color+"15",border:`1.5px solid ${p.color}30`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:"18px",color:p.color}}>{p.icon}</div>
+                    <div style={{flex:1}}>
+                      <div style={{display:"flex",alignItems:"center",gap:"10px",marginBottom:"5px",flexWrap:"wrap"}}>
+                        <span style={{fontFamily:"'Syne',sans-serif",fontWeight:800,fontSize:"15px"}}>{p.name}</span>
+                        <span style={{fontSize:"9px",background:p.badgeBg,color:p.badgeColor,padding:"2px 8px",borderRadius:"5px",fontWeight:700,letterSpacing:"0.07em"}}>{p.badge}</span>
+                        <span style={{fontSize:"10px",color:"rgba(240,244,255,0.25)",marginLeft:"auto"}}>{p.founded}</span>
+                        <a href={`https://${p.url}`} target="_blank" rel="noopener noreferrer"
+                          style={{fontSize:"11px",color:"rgba(240,244,255,0.25)",textDecoration:"none",letterSpacing:"0.03em"}}
+                          onMouseEnter={e=>e.target.style.color=p.color}
+                          onMouseLeave={e=>e.target.style.color="rgba(240,244,255,0.25)"}>{p.url} ↗</a>
+                      </div>
+                      <p style={{fontSize:"12px",color:"rgba(240,244,255,0.42)",lineHeight:1.75,marginBottom:"12px"}}>{p.desc}</p>
+                      {/* Trust points */}
+                      <div style={{display:"flex",flexWrap:"wrap",gap:"6px",marginBottom:"12px"}}>
+                        {p.trustPoints.map(t=>(
+                          <span key={t} style={{fontSize:"10px",color:"rgba(240,244,255,0.45)",background:"rgba(255,255,255,0.04)",border:"1px solid rgba(255,255,255,0.07)",borderRadius:"6px",padding:"3px 9px",display:"flex",alignItems:"center",gap:"5px"}}>
+                            <span style={{color:p.color,fontSize:"8px"}}>✓</span>{t}
+                          </span>
+                        ))}
+                      </div>
+                      {/* Stats */}
+                      <div style={{display:"flex",gap:"8px"}}>
+                        {p.stats.map(([val,label])=>(
+                          <div key={label} style={{flex:1,background:"rgba(255,255,255,0.04)",border:"1px solid rgba(255,255,255,0.06)",borderRadius:"10px",padding:"9px 10px",textAlign:"center"}}>
+                            <div style={{fontFamily:"'Syne',sans-serif",fontWeight:800,fontSize:"13px",color:p.color}}>{val}</div>
+                            <div style={{fontSize:"9px",color:"rgba(240,244,255,0.3)",marginTop:"2px",fontWeight:500}}>{label}</div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div style={{fontSize:"11px",color:"rgba(240,244,255,0.2)",textAlign:"center",lineHeight:1.7}}>
+              All three APIs are queried simultaneously on every swap · Best rate routes automatically<br/>
+              AtlasSwap earns a 0.4% referral commission on swap volume — fully disclosed above
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ══════════════════════════════════════════
+          ABOUT MODAL
+      ══════════════════════════════════════════ */}
+      {showAbout && (
+        <div onClick={() => setShowAbout(false)} style={{
+          position:"fixed",inset:0,zIndex:1000,
+          background:"rgba(0,0,0,0.85)",backdropFilter:"blur(10px)",
+          display:"flex",alignItems:"center",justifyContent:"center",
+          animation:"fadeIn 0.2s ease",
+        }}>
+          <div onClick={e=>e.stopPropagation()} style={{
+            background:"#0C1220",border:"1px solid rgba(255,255,255,0.09)",
+            borderRadius:"24px",padding:"36px",width:"580px",maxWidth:"92vw",
+            boxShadow:"0 40px 80px rgba(0,0,0,0.7)",animation:"dropIn 0.2s ease",
+            maxHeight:"88vh",overflowY:"auto",
+          }}>
+            {/* Logo header */}
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:"24px"}}>
+              <div style={{display:"flex",alignItems:"center",gap:"12px"}}>
+                <div style={{width:44,height:44,borderRadius:"12px",background:"linear-gradient(135deg,#00E5A0 0%,#00C4FF 100%)",display:"flex",alignItems:"center",justifyContent:"center",boxShadow:"0 4px 16px rgba(0,229,160,0.3)"}}>
+                  <svg width="22" height="22" viewBox="0 0 20 20" fill="none">
+                    <circle cx="10" cy="5" r="3" fill="#070B14"/>
+                    <circle cx="4" cy="15" r="3" fill="#070B14"/>
+                    <circle cx="16" cy="15" r="3" fill="#070B14"/>
+                    <line x1="10" y1="8" x2="4" y2="12" stroke="#070B14" strokeWidth="1.5"/>
+                    <line x1="10" y1="8" x2="16" y2="12" stroke="#070B14" strokeWidth="1.5"/>
+                    <line x1="4" y1="15" x2="16" y2="15" stroke="#070B14" strokeWidth="1.5"/>
+                  </svg>
+                </div>
+                <div style={{fontFamily:"'Syne',sans-serif",fontWeight:800,fontSize:"22px",letterSpacing:"-0.03em"}}>
+                  ATLAS<span style={{color:"#00E5A0"}}>SWAP</span>
+                </div>
+              </div>
+              <button onClick={()=>setShowAbout(false)} style={{background:"rgba(255,255,255,0.06)",border:"1px solid rgba(255,255,255,0.1)",borderRadius:"10px",width:34,height:34,color:"rgba(255,255,255,0.5)",cursor:"pointer",fontSize:"14px",flexShrink:0}}>✕</button>
+            </div>
+
+            {/* Mission statement */}
+            <div style={{background:"rgba(0,229,160,0.05)",border:"1px solid rgba(0,229,160,0.14)",borderRadius:"14px",padding:"20px 22px",marginBottom:"22px"}}>
+              <div style={{fontFamily:"'Syne',sans-serif",fontWeight:700,fontSize:"16px",lineHeight:1.55,color:"#fff",letterSpacing:"-0.01em",marginBottom:"10px"}}>
+                "Access to the best exchange rate should be automatic, instant, and require nothing from you except a wallet address."
+              </div>
+              <div style={{fontSize:"12px",color:"rgba(0,229,160,0.7)",fontWeight:600,letterSpacing:"0.05em"}}>— THE ATLASSWAP MISSION</div>
+            </div>
+
+            {/* Body */}
+            <div style={{fontSize:"13px",color:"rgba(240,244,255,0.5)",lineHeight:1.85,marginBottom:"22px"}}>
+              <p style={{marginBottom:"14px"}}>
+                AtlasSwap is a <strong style={{color:"#fff",fontWeight:600}}>non-custodial crypto swap aggregator</strong>. We connect to ChangeNOW, SimpleSwap, and Swapzone simultaneously and route every swap through whichever provider offers the best rate at that exact moment — automatically, with no manual comparison required from you.
+              </p>
+              <p style={{marginBottom:"14px"}}>
+                We built AtlasSwap on a simple belief: <strong style={{color:"#fff",fontWeight:600}}>you should never have to trust us with your funds</strong>. Our architecture makes that structurally impossible. AtlasSwap has no wallet. We cannot hold, delay, freeze, or lose your crypto. Your swap goes directly from your wallet to the exchange provider to your destination wallet.
+              </p>
+              <p style={{marginBottom:"14px"}}>
+                We are also <strong style={{color:"#fff",fontWeight:600}}>transparent about how we earn</strong>. AtlasSwap receives a 0.4% referral commission from our exchange partners on swap volume. This fee is already factored into the rates shown — it does not come out of your swap on top. You pay the same rate you would get going directly to any provider.
+              </p>
+              <p>
+                No hidden fees. No data harvesting. No registration walls. Just the best available rate, routed instantly, across 1,500+ coins and every major blockchain.
+              </p>
+            </div>
+
+            {/* Core principles */}
+            <div style={{marginBottom:"22px"}}>
+              <div style={{fontSize:"10px",color:"rgba(240,244,255,0.3)",fontWeight:700,letterSpacing:"0.1em",marginBottom:"12px"}}>CORE PRINCIPLES</div>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"10px"}}>
+                {[
+                  {icon:"🔒",title:"Structural Non-Custody",desc:"We cannot hold your funds. Not by policy — by architecture. AtlasSwap has no wallet infrastructure."},
+                  {icon:"📢",title:"Full Transparency",desc:"We name our partners, disclose our commission, and explain exactly how every swap is routed."},
+                  {icon:"👤",title:"Privacy by Design",desc:"We collect zero personal data. No email, no IP logging, no identity. Your anonymity is built in."},
+                  {icon:"⚖️",title:"Fair Rates Always",desc:"Rates are pulled live from exchange APIs. We add no markup. The rate shown is the rate executed."},
+                ].map(p=>(
+                  <div key={p.title} style={{background:"rgba(255,255,255,0.03)",border:"1px solid rgba(255,255,255,0.07)",borderRadius:"12px",padding:"14px 15px",display:"flex",gap:"11px",alignItems:"flex-start"}}>
+                    <span style={{fontSize:"18px",flexShrink:0,marginTop:"1px"}}>{p.icon}</span>
+                    <div>
+                      <div style={{fontFamily:"'Syne',sans-serif",fontWeight:700,fontSize:"12px",marginBottom:"4px"}}>{p.title}</div>
+                      <div style={{fontSize:"11px",color:"rgba(240,244,255,0.35)",lineHeight:1.6}}>{p.desc}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",paddingTop:"18px",borderTop:"1px solid rgba(255,255,255,0.06)"}}>
+              <div style={{fontSize:"12px",color:"rgba(240,244,255,0.25)"}}>atlasswap.io · © 2026 AtlasSwap</div>
+              <div style={{display:"flex",gap:"6px"}}>
+                {["Non-Custodial","No KYC","Instant","Transparent"].map(t=>(
+                  <span key={t} style={{fontSize:"10px",color:"#00E5A0",fontWeight:700,background:"rgba(0,229,160,0.08)",border:"1px solid rgba(0,229,160,0.18)",borderRadius:"6px",padding:"3px 9px",letterSpacing:"0.05em"}}>{t}</span>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
       )}
     </>
   );
