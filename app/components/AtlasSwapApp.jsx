@@ -484,10 +484,12 @@ export default function AtlasSwapApp() {
       setStep("done");
     } catch (err) {
       const msg = String(err?.message || "").toLowerCase();
+      const raw = String(err?.message || "");
+      const requestedProviderDetail = raw.match(/Requested provider [^:]+ failed:\s*([^]+?)(?:\s+--\s+Fallback providers failed:|$)/i)?.[1]?.trim();
       const friendly = msg.includes("minimum") || msg.includes("small")
         ? `Amount too small. Minimum for this pair is ${minAmount} ${fromCoin}.`
         : msg.includes("requested provider")
-          ? "Selected provider failed. AtlasSwap attempted fallback routes, but all providers failed for this request."
+          ? `Selected provider failed${requestedProviderDetail ? ` (${requestedProviderDetail})` : ""}. AtlasSwap attempted fallback routes, but all providers failed for this request.`
           : msg.includes("api key") || msg.includes("auth")
             ? "Exchange provider temporarily unavailable. Please try again shortly."
             : "Exchange creation failed. Please try a larger amount or a different pair.";

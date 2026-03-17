@@ -110,27 +110,86 @@ function normalizeCreateResult(provider, data) {
   };
 }
 
+function extractSwapzoneQuotaId(data) {
+  const direct = firstNonEmptyString(
+    data?.quotaId,
+    data?.data?.quotaId,
+    data?.result?.quotaId,
+    data?.transaction?.quotaId
+  );
+  if (direct) return direct;
+  if (Array.isArray(data)) {
+    for (const item of data) {
+      const q = firstNonEmptyString(item?.quotaId, item?.data?.quotaId, item?.result?.quotaId);
+      if (q) return q;
+    }
+  }
+  if (Array.isArray(data?.data)) {
+    for (const item of data.data) {
+      const q = firstNonEmptyString(item?.quotaId, item?.data?.quotaId, item?.result?.quotaId);
+      if (q) return q;
+    }
+  }
+  return "";
+}
+
 async function createWithProvider(provider, from, to, amount, destAddress, extraData = {}) {
   if (provider === "ChangeNOW") {
     if (!CN_KEY) throw new Error("ChangeNOW API key missing");
-    const res = await fetchWithTimeout(`${CN_CREATE_BASE}/transactions/${CN_KEY}`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
+    const endpoints = [
+      {
+        url: `${CN_CREATE_BASE}/transactions/${CN_KEY}`,
+        headers: { "Content-Type": "application/json" },
+        body: {
+          from: from.toLowerCase(),
+          to: to.toLowerCase(),
+          amount,
+          address: destAddress,
+          flow: "standard",
+        },
       },
-      body: JSON.stringify({
-        from: from.toLowerCase(),
-        to: to.toLowerCase(),
-        amount,
-        address: destAddress,
-        flow: "standard",
-      }),
-    });
-    const data = await parseJsonSafe(res);
-    if (!res.ok) throw new Error(`CN create ${res.status}: ${JSON.stringify(data)}`);
-    const normalized = normalizeCreateResult(provider, data);
-    if (!normalized.depositAddress) throw new Error("ChangeNOW did not return a deposit address");
-    return normalized;
+      {
+        url: `${CN_CREATE_BASE}/transactions/${CN_KEY}`,
+        headers: { "Content-Type": "application/json" },
+        body: {
+          fromCurrency: from.toLowerCase(),
+          toCurrency: to.toLowerCase(),
+          fromAmount: amount,
+          toAddress: destAddress,
+          flow: "standard",
+          type: "direct",
+        },
+      },
+      {
+        url: "https://api.changenow.io/v2/exchange",
+        headers: {
+          "x-changenow-api-key": CN_KEY,
+          "Content-Type": "application/json",
+        },
+        body: {
+          fromCurrency: from.toLowerCase(),
+          toCurrency: to.toLowerCase(),
+          fromAmount: amount,
+          toAddress: destAddress,
+          flow: "standard",
+          type: "direct",
+        },
+      },
+    ];
+
+    let lastDetail = "";
+    for (const attempt of endpoints) {
+      const res = await fetchWithTimeout(attempt.url, {
+        method: "POST",
+        headers: attempt.headers,
+        body: JSON.stringify(attempt.body),
+      });
+      const data = await parseJsonSafe(res);
+      const normalized = normalizeCreateResult(provider, data);
+      if (res.ok && normalized.depositAddress) return normalized;
+      lastDetail = `CN create ${res.status}: ${JSON.stringify(data)}`;
+    }
+    throw new Error(lastDetail || "ChangeNOW create failed");
   }
 
   if (provider === "SimpleSwap") {
@@ -177,10 +236,11 @@ async function createWithProvider(provider, from, to, amount, destAddress, extra
         headers: { "x-api-key": SZ_KEY },
       });
       const quotaData = await parseJsonSafe(quotaRes);
-      if (!quotaRes.ok || !quotaData?.quotaId) {
+      const extractedQuotaId = extractSwapzoneQuotaId(quotaData);
+      if (!quotaRes.ok || !extractedQuotaId) {
         throw new Error(`SZ quota fetch failed ${quotaRes.status}: ${JSON.stringify(quotaData)}`);
       }
-      return quotaData.quotaId;
+      return extractedQuotaId;
     };
 
     const createWithQuota = async (quotaId) => {
