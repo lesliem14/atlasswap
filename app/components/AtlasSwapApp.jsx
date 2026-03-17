@@ -1,6 +1,5 @@
 "use client";
 import { useState, useEffect, useRef, useCallback } from "react";
-import ConnectWalletButton from "./ConnectWalletButton";
 
 // ═══════════════════════════════════════════════════════════════
 // COIN DATA — Top 30 coins
@@ -41,34 +40,20 @@ const BASE_RATES = {
   ARB: 1.12, OP: 1.85, INJ: 22, SUI: 1.4, APT: 8.9,
 };
 
-function formatNumberEnUS(value, options = {}) {
-  return new Intl.NumberFormat("en-US", options).format(value);
-}
-
 // ═══════════════════════════════════════════════════════════════
-// API LAYER — ChangeNOW + SimpleSwap + Swapzone
-// Rate comparison runs silently in background
+// API LAYER — ChangeNOW V2 + SimpleSwap V3 + Swapzone
+// All 3 called simultaneously via Promise.allSettled()
+// Best rate wins and routes the swap
 // ═══════════════════════════════════════════════════════════════
-const API_CONFIG = {
-  changenow: {
-    name: "ChangeNOW",
-    baseUrl: "https://api.changenow.io/v1",
-    apiKey: process.env.NEXT_PUBLIC_CHANGENOW_API_KEY || "",
-  },
-  simpleswap: {
-    name: "SimpleSwap",
-    baseUrl: "https://api.simpleswap.io/v3",
-    apiKey: process.env.NEXT_PUBLIC_SIMPLESWAP_API_KEY || "",
-  },
-  swapzone: {
-    name: "Swapzone",
-    baseUrl: "https://api.swapzone.io/v1",
-    apiKey: process.env.NEXT_PUBLIC_SWAPZONE_API_KEY || "",
-  },
-};
+const CN_KEY  = process.env.NEXT_PUBLIC_CHANGENOW_API_KEY  || "";
+const SS_KEY  = process.env.NEXT_PUBLIC_SIMPLESWAP_API_KEY || "";
+const SZ_KEY  = process.env.NEXT_PUBLIC_SWAPZONE_API_KEY   || "";
 
-// ── SimpleSwap V3 requires ticker:network format ──
-// Maps our coin symbols to their primary network
+const CN_BASE = "https://api.changenow.io/v2";
+const SS_BASE = "https://api.simpleswap.io/v3";
+const SZ_BASE = "https://api.swapzone.io/v1";
+
+// ── SimpleSwap V3: coin → network mapping ──
 const SS_NETWORKS = {
   BTC:"btc", ETH:"eth", USDT:"eth", BNB:"bsc", SOL:"sol",
   USDC:"eth", XRP:"xrp", DOGE:"doge", ADA:"ada", AVAX:"avax",
@@ -77,20 +62,27 @@ const SS_NETWORKS = {
   ARB:"arbitrum", OP:"optimism", INJ:"inj", SUI:"sui", APT:"apt",
 };
 
-// ── Fetch rate from ChangeNOW ──
+// ─────────────────────────────────────────────────────────────
+// 1. CHANGENOW V2
+//    Auth: header  x-changenow-api-key
+//    Rate: GET /v2/exchange/estimated-amount
+//    Create: POST /v2/exchange
+// ─────────────────────────────────────────────────────────────
 async function fetchChangeNowRate(from, to, amount) {
   try {
-    const key = API_CONFIG.changenow.apiKey;
-    if (!key) throw new Error("No key");
-    const url = `${API_CONFIG.changenow.baseUrl}/exchange-amount/${amount}/${from.toLowerCase()}_${to.toLowerCase()}?api_key=${key}`;
-    const res = await fetch(url);
-    if (!res.ok) throw new Error("ChangeNOW error");
+    if (!CN_KEY) throw new Error("No CN key");
+    const url = `${CN_BASE}/exchange/estimated-amount?fromCurrency=${from.toLowerCase()}&toCurrency=${to.toLowerCase()}&fromAmount=${amount}&flow=standard&type=direct`;
+    const res = await fetch(url, {
+      headers: { "x-changenow-api-key": CN_KEY },
+    });
+    if (!res.ok) throw new Error(`ChangeNOW ${res.status}`);
     const data = await res.json();
-    if (!data.estimatedAmount) throw new Error("No amount");
+    const estimated = parseFloat(data?.toAmount || data?.estimatedAmount || 0);
+    if (!estimated || isNaN(estimated)) throw new Error("No CN amount");
     return {
       provider: "ChangeNOW",
-      rate: parseFloat(data.estimatedAmount),
-      rawRate: parseFloat(data.estimatedAmount) / amount,
+      rate: estimated,
+      rawRate: estimated / amount,
       available: true,
       simulated: false,
     };
@@ -100,21 +92,26 @@ async function fetchChangeNowRate(from, to, amount) {
   }
 }
 
-// ── Fetch rate from SimpleSwap V3 ──
+// ─────────────────────────────────────────────────────────────
+// 2. SIMPLESWAP V3
+//    Auth: header  x-api-key
+//    Rate: GET /v3/estimates
+//    Create: POST /v3/exchanges
+// ─────────────────────────────────────────────────────────────
 async function fetchSimpleSwapRate(from, to, amount) {
   try {
-    const key = API_CONFIG.simpleswap.apiKey;
-    if (!key) throw new Error("No key");
+    if (!SS_KEY) throw new Error("No SS key");
     const netFrom = SS_NETWORKS[from] || from.toLowerCase();
     const netTo   = SS_NETWORKS[to]   || to.toLowerCase();
-    const url = `${API_CONFIG.simpleswap.baseUrl}/estimates?tickerFrom=${from.toLowerCase()}&networkFrom=${netFrom}&tickerTo=${to.toLowerCase()}&networkTo=${netTo}&amount=${amount}&fixed=false`;
+    const url = `${SS_BASE}/estimates?tickerFrom=${from.toLowerCase()}&networkFrom=${netFrom}&tickerTo=${to.toLowerCase()}&networkTo=${netTo}&amount=${amount}&fixed=false`;
     const res = await fetch(url, {
-      headers: { "x-api-key": key, "Accept": "application/json" },
+      headers: { "x-api-key": SS_KEY, "Accept": "application/json" },
     });
-    if (!res.ok) throw new Error("SimpleSwap V3 error");
+    if (!res.ok) throw new Error(`SimpleSwap ${res.status}`);
     const data = await res.json();
-    const estimated = parseFloat(data?.result?.amountTo || data?.result || 0);
-    if (!estimated || isNaN(estimated)) throw new Error("No amount");
+    // V3 response: { result: { amountTo: "..." } } or { result: "..." }
+    const estimated = parseFloat(data?.result?.amountTo ?? data?.result ?? 0);
+    if (!estimated || isNaN(estimated)) throw new Error("No SS amount");
     return {
       provider: "SimpleSwap",
       rate: estimated,
@@ -128,23 +125,32 @@ async function fetchSimpleSwapRate(from, to, amount) {
   }
 }
 
-// ── Fetch rate from Swapzone ──
+// ─────────────────────────────────────────────────────────────
+// 3. SWAPZONE  (instant exchange — not DEX)
+//    Auth: header  x-api-key  AND  query param  apikey
+//    Rate: GET /v1/exchange/get-rate
+//    Create: POST /v1/exchange/create
+//    Status: GET /v1/exchange/tx?id=
+// ─────────────────────────────────────────────────────────────
 async function fetchSwapzoneRate(from, to, amount) {
   try {
-    const key = API_CONFIG.swapzone.apiKey;
-    if (!key) throw new Error("No key");
-    const url = `${API_CONFIG.swapzone.baseUrl}/exchange/get-rate?from=${from.toLowerCase()}&to=${to.toLowerCase()}&amount=${amount}&apikey=${key}&noRefunds=false`;
-    const res = await fetch(url);
-    if (!res.ok) throw new Error("Swapzone error");
+    if (!SZ_KEY) throw new Error("No SZ key");
+    const url = `${SZ_BASE}/exchange/get-rate?from=${from.toLowerCase()}&to=${to.toLowerCase()}&amount=${amount}&rateType=all&chooseRate=best&noRefundAddress=false&apikey=${SZ_KEY}`;
+    const res = await fetch(url, {
+      headers: { "x-api-key": SZ_KEY },
+    });
+    if (!res.ok) throw new Error(`Swapzone ${res.status}`);
     const data = await res.json();
-    const rates = Array.isArray(data) ? data : (data.rates || [data]);
-    const best = rates.filter(r => r.toAmount > 0).sort((a, b) => b.toAmount - a.toAmount)[0];
-    if (!best?.toAmount) throw new Error("No amount");
+    // Response is a single best-rate object (chooseRate=best)
+    // Fields: amountTo, quotaId, adapter, minAmount, maxAmount
+    const amountTo = parseFloat(data?.amountTo ?? 0);
+    if (!amountTo || isNaN(amountTo)) throw new Error("No SZ amount");
     return {
       provider: "Swapzone",
-      rate: parseFloat(best.toAmount),
-      rawRate: parseFloat(best.toAmount) / amount,
-      routerName: best.routerName || "",
+      rate: amountTo,
+      rawRate: amountTo / amount,
+      quotaId: data?.quotaId || "",
+      adapter: data?.adapter || "",
       available: true,
       simulated: false,
     };
@@ -154,7 +160,9 @@ async function fetchSwapzoneRate(from, to, amount) {
   }
 }
 
-// ── Background aggregator — all 3 simultaneously, returns best ──
+// ─────────────────────────────────────────────────────────────
+// AGGREGATOR — runs all 3 simultaneously, returns best
+// ─────────────────────────────────────────────────────────────
 async function fetchBestRate(from, to, amount) {
   const [cn, ss, sz] = await Promise.allSettled([
     fetchChangeNowRate(from, to, amount),
@@ -177,60 +185,118 @@ async function fetchBestRate(from, to, amount) {
   return { best, comparison: results };
 }
 
-// ── Create exchange via best provider ──
-async function createExchange(provider, from, to, amount, destAddress) {
+// ─────────────────────────────────────────────────────────────
+// CREATE EXCHANGE — calls winning provider's create endpoint
+// ─────────────────────────────────────────────────────────────
+async function createExchange(provider, from, to, amount, destAddress, extraData = {}) {
+  // ── ChangeNOW V2 ──
   if (provider === "ChangeNOW") {
-    const key = API_CONFIG.changenow.apiKey;
-    const res = await fetch(`${API_CONFIG.changenow.baseUrl}/transactions/${key}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        from: from.toLowerCase(), to: to.toLowerCase(),
-        amount, address: destAddress, flow: "standard",
-      }),
-    });
-    const data = await res.json();
-    return { depositAddress: data.payinAddress, exchangeId: data.id, provider };
-  }
-
-  if (provider === "SimpleSwap") {
-    const key = API_CONFIG.simpleswap.apiKey;
-    const netFrom = SS_NETWORKS[from] || from.toLowerCase();
-    const netTo   = SS_NETWORKS[to]   || to.toLowerCase();
-    const res = await fetch(`${API_CONFIG.simpleswap.baseUrl}/exchanges`, {
+    const res = await fetch(`${CN_BASE}/exchange`, {
       method: "POST",
       headers: {
-        "x-api-key": key,
+        "x-changenow-api-key": CN_KEY,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        fromCurrency: from.toLowerCase(),
+        toCurrency:   to.toLowerCase(),
+        fromAmount:   amount,
+        toAddress:    destAddress,
+        flow:         "standard",
+        type:         "direct",
+      }),
+    });
+    if (!res.ok) throw new Error(`CN create ${res.status}`);
+    const data = await res.json();
+    return {
+      depositAddress: data?.payinAddress  || data?.payin?.address || "",
+      exchangeId:     data?.id            || data?.requestId      || "",
+      provider,
+    };
+  }
+
+  // ── SimpleSwap V3 ──
+  if (provider === "SimpleSwap") {
+    const netFrom = SS_NETWORKS[from] || from.toLowerCase();
+    const netTo   = SS_NETWORKS[to]   || to.toLowerCase();
+    const res = await fetch(`${SS_BASE}/exchanges`, {
+      method: "POST",
+      headers: {
+        "x-api-key": SS_KEY,
         "Content-Type": "application/json",
         "Accept": "application/json",
       },
       body: JSON.stringify({
-        tickerFrom: from.toLowerCase(), networkFrom: netFrom,
-        tickerTo: to.toLowerCase(),   networkTo: netTo,
-        amount: String(amount), fixed: false,
-        addressTo: destAddress,
+        tickerFrom:  from.toLowerCase(),
+        networkFrom: netFrom,
+        tickerTo:    to.toLowerCase(),
+        networkTo:   netTo,
+        amount:      String(amount),
+        fixed:       false,
+        addressTo:   destAddress,
       }),
     });
+    if (!res.ok) throw new Error(`SS create ${res.status}`);
     const data = await res.json();
-    return { depositAddress: data?.result?.addressFrom, exchangeId: data?.result?.id, provider };
+    return {
+      depositAddress: data?.result?.addressFrom || data?.addressFrom || "",
+      exchangeId:     data?.result?.id          || data?.id          || "",
+      provider,
+    };
   }
 
+  // ── Swapzone instant exchange ──
   if (provider === "Swapzone") {
-    const key = API_CONFIG.swapzone.apiKey;
-    const res = await fetch(`${API_CONFIG.swapzone.baseUrl}/exchange/create`, {
+    const res = await fetch(`${SZ_BASE}/exchange/create`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "x-api-key": SZ_KEY,
+        "Content-Type": "application/json",
+      },
       body: JSON.stringify({
-        from: from.toLowerCase(), to: to.toLowerCase(),
-        amountDeposit: amount, addressReceive: destAddress,
-        apikey: key,
+        from:           from.toLowerCase(),
+        to:             to.toLowerCase(),
+        amountDeposit:  amount,
+        addressReceive: destAddress,
+        quotaId:        extraData.quotaId || "",
+        apikey:         SZ_KEY,
       }),
     });
+    if (!res.ok) throw new Error(`SZ create ${res.status}`);
     const data = await res.json();
-    return { depositAddress: data.addressDeposit, exchangeId: data.id, provider };
+    return {
+      depositAddress: data?.addressDeposit || data?.transaction?.addressDeposit || "",
+      exchangeId:     data?.id             || data?.transaction?.id             || "",
+      provider,
+    };
   }
 
   throw new Error("Unknown provider");
+}
+
+// ─────────────────────────────────────────────────────────────
+// GET TRANSACTION STATUS — for post-swap tracking
+// ─────────────────────────────────────────────────────────────
+async function getTransactionStatus(provider, exchangeId) {
+  try {
+    if (provider === "ChangeNOW") {
+      const res = await fetch(`${CN_BASE}/exchange/by-id?id=${exchangeId}`, {
+        headers: { "x-changenow-api-key": CN_KEY },
+      });
+      const data = await res.json();
+      return data?.status || "unknown";
+    }
+    if (provider === "Swapzone") {
+      const res = await fetch(`${SZ_BASE}/exchange/tx?id=${exchangeId}`, {
+        headers: { "x-api-key": SZ_KEY },
+      });
+      const data = await res.json();
+      return data?.transaction?.status || "unknown";
+    }
+    return "unknown";
+  } catch {
+    return "unknown";
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -507,6 +573,8 @@ export default function AtlasSwapApp() {
   const [showAbout, setShowAbout] = useState(false);
   const [showExchange, setShowExchange] = useState(false);
   const [showFeatures, setShowFeatures] = useState(false);
+  const [showWallet, setShowWallet] = useState(false);
+  const [connectedWallet, setConnectedWallet] = useState(null);
   const [tickerPrices, setTickerPrices] = useState({...BASE_RATES});
   const [tickerChanges, setTickerChanges] = useState({});
   const rateTimer = useRef(null);
@@ -561,6 +629,9 @@ export default function AtlasSwapApp() {
     return () => clearInterval(interval);
   }, []);
 
+  // Store Swapzone quotaId from rate response — needed for create transaction
+  const [szQuotaId, setSzQuotaId] = useState("");
+
   // ── Keyboard shortcut: Ctrl+Shift+A opens backend panel ──
   useEffect(() => {
     const handler = e => {
@@ -580,6 +651,9 @@ export default function AtlasSwapApp() {
       setReceiveAmt(best.rate.toFixed(6));
       setBestProvider(best.provider);
       setComparison(comp);
+      // Store Swapzone quotaId if it won or is in results
+      const szResult = comp.find(r => r.provider === "Swapzone");
+      if (szResult?.quotaId) setSzQuotaId(szResult.quotaId);
     } catch {
       const fallback = ((parsed * (BASE_RATES[from] || 1)) / (BASE_RATES[to] || 1)) * 0.996;
       setReceiveAmt(fallback.toFixed(6));
@@ -620,7 +694,8 @@ export default function AtlasSwapApp() {
     try {
       const result = await createExchange(
         bestProvider, fromCoin, toCoin,
-        parseFloat(sendAmt), destAddr.trim()
+        parseFloat(sendAmt), destAddr.trim(),
+        { quotaId: szQuotaId }
       );
       setDepositAddress(result.depositAddress || "");
       setExchangeId(result.exchangeId || "");
@@ -840,7 +915,7 @@ export default function AtlasSwapApp() {
               }}>
                 <span style={{ color: c.color, fontWeight: 700, letterSpacing: "0.04em" }}>{c.symbol}</span>
                 <span style={{ color: "rgba(240,244,255,0.55)" }}>
-                  ${price < 0.01 ? price.toExponential(2) : price < 1 ? price.toFixed(4) : formatNumberEnUS(price, { maximumFractionDigits: 2 })}
+                  ${price < 0.01 ? price.toExponential(2) : price < 1 ? price.toFixed(4) : price.toLocaleString(undefined, { maximumFractionDigits: 2 })}
                 </span>
                 <span style={{
                   color: isUp ? "#00E5A0" : "#FF5A72",
@@ -915,7 +990,40 @@ export default function AtlasSwapApp() {
             }}/>
             LIVE
           </div>
-          <ConnectWalletButton />
+          {connectedWallet ? (
+            <button
+              onMouseDown={() => setShowWallet(true)}
+              style={{
+                display: "flex", alignItems: "center", gap: "8px",
+                background: "rgba(0,229,160,0.08)",
+                border: "1px solid rgba(0,229,160,0.25)",
+                borderRadius: "10px", padding: "9px 16px",
+                color: "#00E5A0", fontWeight: 700, fontSize: "13px",
+                cursor: "pointer", fontFamily: "'Outfit', sans-serif",
+                letterSpacing: "0.03em", transition: "all 0.2s",
+              }}
+              onMouseEnter={e => e.currentTarget.style.background = "rgba(0,229,160,0.14)"}
+              onMouseLeave={e => e.currentTarget.style.background = "rgba(0,229,160,0.08)"}
+            >
+              <span style={{ fontSize: "16px" }}>{connectedWallet.icon}</span>
+              <span>{connectedWallet.name}</span>
+              <span style={{ fontSize: "10px", opacity: 0.5 }}>▼</span>
+            </button>
+          ) : (
+            <button
+              onMouseDown={() => setShowWallet(true)}
+              style={{
+                background: "linear-gradient(135deg, #00E5A0, #00C4FF)",
+                border: "none", borderRadius: "10px", padding: "9px 20px",
+                color: "#070B14", fontWeight: 700, fontSize: "13px",
+                cursor: "pointer", fontFamily: "'Outfit', sans-serif",
+                letterSpacing: "0.03em", boxShadow: "0 4px 16px rgba(0,229,160,0.25)",
+                transition: "all 0.2s",
+              }}
+              onMouseEnter={e => e.currentTarget.style.boxShadow = "0 8px 24px rgba(0,229,160,0.4)"}
+              onMouseLeave={e => e.currentTarget.style.boxShadow = "0 4px 16px rgba(0,229,160,0.25)"}
+            >Connect Wallet</button>
+          )}
         </div>
       </nav>
 
@@ -1092,7 +1200,7 @@ export default function AtlasSwapApp() {
                     display: "flex", gap: "16px",
                   }}>
                     <span>
-                      ≈ ${formatNumberEnUS((parseFloat(sendAmt) || 0) * (tickerPrices[fromCoin] || 0), { maximumFractionDigits: 2 })} USD
+                      ≈ ${((parseFloat(sendAmt) || 0) * (tickerPrices[fromCoin] || 0)).toLocaleString(undefined, { maximumFractionDigits: 2 })} USD
                     </span>
                     <span style={{ color: "rgba(0,229,160,0.55)" }}>All fees included</span>
                   </div>
@@ -1533,6 +1641,99 @@ export default function AtlasSwapApp() {
           © 2026 AtlasSwap · Non-custodial · atlasswap.io
         </div>
       </div>
+
+      {/* ══════════════════════════════════════════
+          WALLET SELECTOR MODAL
+      ══════════════════════════════════════════ */}
+      {showWallet && (
+        <div onClick={() => setShowWallet(false)} style={{
+          position:"fixed",inset:0,zIndex:1000,
+          background:"rgba(0,0,0,0.85)",backdropFilter:"blur(10px)",
+          display:"flex",alignItems:"center",justifyContent:"center",
+          animation:"fadeIn 0.2s ease",
+        }}>
+          <div onClick={e=>e.stopPropagation()} style={{
+            background:"#0C1220",border:"1px solid rgba(255,255,255,0.09)",
+            borderRadius:"24px",padding:"32px",width:"420px",maxWidth:"92vw",
+            boxShadow:"0 40px 80px rgba(0,0,0,0.7)",animation:"dropIn 0.2s ease",
+          }}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"24px"}}>
+              <div>
+                <div style={{fontFamily:"'Syne',sans-serif",fontWeight:800,fontSize:"20px",letterSpacing:"-0.02em"}}>
+                  {connectedWallet ? "Switch Wallet" : "Connect Wallet"}
+                </div>
+                <div style={{fontSize:"12px",color:"rgba(240,244,255,0.35)",marginTop:"4px"}}>
+                  Choose your preferred wallet to connect
+                </div>
+              </div>
+              <button onClick={()=>setShowWallet(false)} style={{background:"rgba(255,255,255,0.06)",border:"1px solid rgba(255,255,255,0.1)",borderRadius:"10px",width:34,height:34,color:"rgba(255,255,255,0.5)",cursor:"pointer",fontSize:"14px"}}>✕</button>
+            </div>
+
+            {/* Wallet list */}
+            <div style={{display:"flex",flexDirection:"column",gap:"8px",marginBottom:"20px"}}>
+              {[
+                { name:"MetaMask",      icon:"🦊", desc:"Most popular • EVM chains",         color:"#F6851B", popular:true  },
+                { name:"Rabby Wallet",  icon:"🐰", desc:"Multi-chain • DeFi optimised",      color:"#8697FF", popular:false },
+                { name:"Phantom",       icon:"👻", desc:"Solana • EVM • Bitcoin",             color:"#AB9FF2", popular:false },
+                { name:"WalletConnect", icon:"🔗", desc:"200+ wallets via QR code",           color:"#3B99FC", popular:false },
+                { name:"Coinbase Wallet",icon:"🔵",desc:"Easy onboarding • Mobile friendly",  color:"#0052FF", popular:false },
+                { name:"Trust Wallet",  icon:"🛡️", desc:"Mobile first • 70+ blockchains",    color:"#3375BB", popular:false },
+                { name:"Ledger",        icon:"🔐", desc:"Hardware wallet • Maximum security", color:"#00E5A0", popular:false },
+                { name:"OKX Wallet",    icon:"⭕", desc:"Multi-chain • Web3 gateway",         color:"#FFFFFF", popular:false },
+              ].map(w => (
+                <button key={w.name}
+                  onMouseDown={() => { setConnectedWallet(w); setShowWallet(false); }}
+                  style={{
+                    display:"flex",alignItems:"center",gap:"14px",
+                    background: connectedWallet?.name === w.name ? "rgba(0,229,160,0.08)" : "rgba(255,255,255,0.03)",
+                    border: connectedWallet?.name === w.name ? "1px solid rgba(0,229,160,0.25)" : "1px solid rgba(255,255,255,0.07)",
+                    borderRadius:"14px",padding:"14px 16px",
+                    cursor:"pointer",width:"100%",textAlign:"left",
+                    transition:"all 0.15s",
+                  }}
+                  onMouseEnter={e=>{e.currentTarget.style.background="rgba(255,255,255,0.07)";e.currentTarget.style.borderColor="rgba(255,255,255,0.12)";}}
+                  onMouseLeave={e=>{e.currentTarget.style.background=connectedWallet?.name===w.name?"rgba(0,229,160,0.08)":"rgba(255,255,255,0.03)";e.currentTarget.style.borderColor=connectedWallet?.name===w.name?"rgba(0,229,160,0.25)":"rgba(255,255,255,0.07)";}}
+                >
+                  <div style={{
+                    width:42,height:42,borderRadius:"12px",flexShrink:0,
+                    background:`${w.color}15`,border:`1.5px solid ${w.color}30`,
+                    display:"flex",alignItems:"center",justifyContent:"center",
+                    fontSize:"20px",
+                  }}>{w.icon}</div>
+                  <div style={{flex:1}}>
+                    <div style={{display:"flex",alignItems:"center",gap:"8px"}}>
+                      <span style={{fontFamily:"'Syne',sans-serif",fontWeight:700,fontSize:"14px",color:"#fff"}}>{w.name}</span>
+                      {w.popular && <span style={{fontSize:"9px",background:"rgba(0,229,160,0.12)",color:"#00E5A0",padding:"2px 7px",borderRadius:"4px",fontWeight:700,letterSpacing:"0.06em"}}>POPULAR</span>}
+                      {connectedWallet?.name===w.name && <span style={{marginLeft:"auto",color:"#00E5A0",fontSize:"12px"}}>✓ Connected</span>}
+                    </div>
+                    <div style={{fontSize:"11px",color:"rgba(240,244,255,0.35)",marginTop:"2px"}}>{w.desc}</div>
+                  </div>
+                </button>
+              ))}
+            </div>
+
+            {connectedWallet && (
+              <button
+                onMouseDown={() => { setConnectedWallet(null); setShowWallet(false); }}
+                style={{
+                  width:"100%",padding:"12px",
+                  background:"rgba(255,90,114,0.08)",
+                  border:"1px solid rgba(255,90,114,0.2)",
+                  borderRadius:"12px",color:"#FF5A72",
+                  fontFamily:"'Outfit',sans-serif",fontWeight:600,
+                  fontSize:"13px",cursor:"pointer",transition:"all 0.2s",
+                }}
+                onMouseEnter={e=>e.currentTarget.style.background="rgba(255,90,114,0.14)"}
+                onMouseLeave={e=>e.currentTarget.style.background="rgba(255,90,114,0.08)"}
+              >Disconnect Wallet</button>
+            )}
+
+            <div style={{marginTop:"16px",fontSize:"11px",color:"rgba(240,244,255,0.2)",textAlign:"center",lineHeight:1.6}}>
+              AtlasSwap never stores your wallet credentials.<br/>Connection is local to your browser only.
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ── Backend Rate Panel (Ctrl+Shift+A) ── */}
       {showBackend && (
