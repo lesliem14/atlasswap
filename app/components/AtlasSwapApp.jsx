@@ -186,92 +186,97 @@ async function fetchBestRate(from, to, amount) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// CREATE EXCHANGE — calls winning provider's create endpoint
+// CREATE EXCHANGE — calls winning provider, falls back to others
+// Returns { depositAddress, exchangeId, provider }
 // ─────────────────────────────────────────────────────────────
+async function createExchangeChangeNow(from, to, amount, destAddress) {
+  if (!CN_KEY) throw new Error("No ChangeNOW key");
+  const res = await fetch(`${CN_BASE}/exchange`, {
+    method: "POST",
+    headers: { "x-changenow-api-key": CN_KEY, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      fromCurrency: from.toLowerCase(),
+      toCurrency:   to.toLowerCase(),
+      fromAmount:   amount,
+      toAddress:    destAddress,
+      flow:         "standard",
+      type:         "direct",
+    }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(`ChangeNOW ${res.status}: ${data?.message || ""}`);
+  const depositAddress = data?.payinAddress || data?.payin?.address || "";
+  const exchangeId     = data?.id || data?.requestId || "";
+  if (!depositAddress) throw new Error("ChangeNOW returned no deposit address");
+  return { depositAddress, exchangeId, provider: "ChangeNOW" };
+}
+
+async function createExchangeSimpleSwap(from, to, amount, destAddress) {
+  if (!SS_KEY) throw new Error("No SimpleSwap key");
+  const netFrom = SS_NETWORKS[from] || from.toLowerCase();
+  const netTo   = SS_NETWORKS[to]   || to.toLowerCase();
+  const res = await fetch(`${SS_BASE}/exchanges`, {
+    method: "POST",
+    headers: { "x-api-key": SS_KEY, "Content-Type": "application/json", "Accept": "application/json" },
+    body: JSON.stringify({
+      tickerFrom:  from.toLowerCase(),
+      networkFrom: netFrom,
+      tickerTo:    to.toLowerCase(),
+      networkTo:   netTo,
+      amount:      String(amount),
+      fixed:       false,
+      addressTo:   destAddress,
+    }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(`SimpleSwap ${res.status}: ${data?.message || ""}`);
+  // V3 wraps result in data.result or returns directly
+  const result         = data?.result ?? data;
+  const depositAddress = result?.addressFrom || result?.payin_address || "";
+  const exchangeId     = result?.id || result?.exchange_id || "";
+  if (!depositAddress) throw new Error("SimpleSwap returned no deposit address");
+  return { depositAddress, exchangeId, provider: "SimpleSwap" };
+}
+
+async function createExchangeSwapzone(from, to, amount, destAddress, quotaId) {
+  if (!SZ_KEY) throw new Error("No Swapzone key");
+  const body = {
+    from:           from.toLowerCase(),
+    to:             to.toLowerCase(),
+    amountDeposit:  amount,
+    addressReceive: destAddress,
+    apikey:         SZ_KEY,
+  };
+  if (quotaId) body.quotaId = quotaId;
+  const res = await fetch(`${SZ_BASE}/exchange/create`, {
+    method: "POST",
+    headers: { "x-api-key": SZ_KEY, "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(`Swapzone ${res.status}: ${data?.message || ""}`);
+  const tx             = data?.transaction ?? data;
+  const depositAddress = tx?.addressDeposit || data?.addressDeposit || "";
+  const exchangeId     = tx?.id || data?.id || "";
+  if (!depositAddress) throw new Error("Swapzone returned no deposit address");
+  return { depositAddress, exchangeId, provider: "Swapzone" };
+}
+
+// Tries winning provider first, then falls back to the other two
 async function createExchange(provider, from, to, amount, destAddress, extraData = {}) {
-  // ── ChangeNOW V2 ──
-  if (provider === "ChangeNOW") {
-    const res = await fetch(`${CN_BASE}/exchange`, {
-      method: "POST",
-      headers: {
-        "x-changenow-api-key": CN_KEY,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        fromCurrency: from.toLowerCase(),
-        toCurrency:   to.toLowerCase(),
-        fromAmount:   amount,
-        toAddress:    destAddress,
-        flow:         "standard",
-        type:         "direct",
-      }),
-    });
-    if (!res.ok) throw new Error(`CN create ${res.status}`);
-    const data = await res.json();
-    return {
-      depositAddress: data?.payinAddress  || data?.payin?.address || "",
-      exchangeId:     data?.id            || data?.requestId      || "",
-      provider,
-    };
+  const order = [provider, ...["ChangeNOW","SimpleSwap","Swapzone"].filter(p => p !== provider)];
+  let lastErr = null;
+  for (const p of order) {
+    try {
+      if (p === "ChangeNOW")  return await createExchangeChangeNow(from, to, amount, destAddress);
+      if (p === "SimpleSwap") return await createExchangeSimpleSwap(from, to, amount, destAddress);
+      if (p === "Swapzone")   return await createExchangeSwapzone(from, to, amount, destAddress, extraData.quotaId);
+    } catch (e) {
+      lastErr = e;
+      console.warn(`${p} create failed:`, e.message, "— trying next provider");
+    }
   }
-
-  // ── SimpleSwap V3 ──
-  if (provider === "SimpleSwap") {
-    const netFrom = SS_NETWORKS[from] || from.toLowerCase();
-    const netTo   = SS_NETWORKS[to]   || to.toLowerCase();
-    const res = await fetch(`${SS_BASE}/exchanges`, {
-      method: "POST",
-      headers: {
-        "x-api-key": SS_KEY,
-        "Content-Type": "application/json",
-        "Accept": "application/json",
-      },
-      body: JSON.stringify({
-        tickerFrom:  from.toLowerCase(),
-        networkFrom: netFrom,
-        tickerTo:    to.toLowerCase(),
-        networkTo:   netTo,
-        amount:      String(amount),
-        fixed:       false,
-        addressTo:   destAddress,
-      }),
-    });
-    if (!res.ok) throw new Error(`SS create ${res.status}`);
-    const data = await res.json();
-    return {
-      depositAddress: data?.result?.addressFrom || data?.addressFrom || "",
-      exchangeId:     data?.result?.id          || data?.id          || "",
-      provider,
-    };
-  }
-
-  // ── Swapzone instant exchange ──
-  if (provider === "Swapzone") {
-    const res = await fetch(`${SZ_BASE}/exchange/create`, {
-      method: "POST",
-      headers: {
-        "x-api-key": SZ_KEY,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        from:           from.toLowerCase(),
-        to:             to.toLowerCase(),
-        amountDeposit:  amount,
-        addressReceive: destAddress,
-        quotaId:        extraData.quotaId || "",
-        apikey:         SZ_KEY,
-      }),
-    });
-    if (!res.ok) throw new Error(`SZ create ${res.status}`);
-    const data = await res.json();
-    return {
-      depositAddress: data?.addressDeposit || data?.transaction?.addressDeposit || "",
-      exchangeId:     data?.id             || data?.transaction?.id             || "",
-      provider,
-    };
-  }
-
-  throw new Error("Unknown provider");
+  throw lastErr || new Error("All providers failed");
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -300,14 +305,12 @@ async function getTransactionStatus(provider, exchangeId) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// COIN SELECTOR COMPONENT — fixed dropdown zIndex + mobile click
+// COIN SELECTOR — dropdown anchored inside card (no overflow issues)
 // ═══════════════════════════════════════════════════════════════
 function CoinSelector({ selected, onChange, exclude }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
-  const [dropPos, setDropPos] = useState({ top: 0, left: 0, width: 230 });
-  const btnRef = useRef(null);
-  const dropRef = useRef(null);
+  const wrapRef = useRef(null);
   const coin = COINS.find(c => c.symbol === selected) || COINS[0];
 
   const filtered = COINS.filter(c =>
@@ -316,25 +319,10 @@ function CoinSelector({ selected, onChange, exclude }) {
      c.name.toLowerCase().includes(query.toLowerCase()))
   );
 
-  // Calculate dropdown position from button's screen coords
-  const openDropdown = () => {
-    if (btnRef.current) {
-      const rect = btnRef.current.getBoundingClientRect();
-      setDropPos({
-        top: rect.bottom + window.scrollY + 6,
-        left: Math.max(8, rect.right - 230 + window.scrollX),
-        width: 230,
-      });
-    }
-    setOpen(o => !o);
-  };
-
+  // Close on outside click
   useEffect(() => {
     const h = e => {
-      if (
-        btnRef.current && !btnRef.current.contains(e.target) &&
-        dropRef.current && !dropRef.current.contains(e.target)
-      ) {
+      if (wrapRef.current && !wrapRef.current.contains(e.target)) {
         setOpen(false);
         setQuery("");
       }
@@ -348,10 +336,10 @@ function CoinSelector({ selected, onChange, exclude }) {
   }, []);
 
   return (
-    <div style={{ position: "relative", flexShrink: 0 }}>
+    // Wrapper has position:relative so the dropdown anchors to it
+    <div ref={wrapRef} style={{ position: "relative", flexShrink: 0, zIndex: open ? 200 : 1 }}>
       <button
-        ref={btnRef}
-        onMouseDown={e => { e.preventDefault(); openDropdown(); }}
+        onMouseDown={e => { e.preventDefault(); setOpen(o => !o); }}
         style={{
           display: "flex", alignItems: "center", gap: "8px",
           background: "rgba(255,255,255,0.06)",
@@ -377,11 +365,12 @@ function CoinSelector({ selected, onChange, exclude }) {
       </button>
 
       {open && (
-        <div ref={dropRef} style={{
-          position: "fixed",
-          top: dropPos.top,
-          left: dropPos.left,
-          width: dropPos.width,
+        <div style={{
+          position: "absolute",
+          top: "calc(100% + 6px)",
+          right: 0,
+          minWidth: "200px",
+          width: "220px",
           background: "#0C1220",
           border: "1px solid rgba(255,255,255,0.14)",
           borderRadius: "16px",
@@ -782,6 +771,16 @@ export default function AtlasSwapApp() {
         }
 
         .atlasswap-card { animation: fadeUp 0.5s cubic-bezier(0.16,1,0.3,1) both; }
+        @keyframes slideInRight {
+          from { opacity: 0; transform: translateX(40px); }
+          to   { opacity: 1; transform: translateX(0); }
+        }
+        @keyframes slideInLeft {
+          from { opacity: 0; transform: translateX(-40px); }
+          to   { opacity: 1; transform: translateX(0); }
+        }
+        .step-slide-in  { animation: slideInRight 0.35s cubic-bezier(0.16,1,0.3,1) both; }
+        .step-slide-back { animation: slideInLeft  0.35s cubic-bezier(0.16,1,0.3,1) both; }
 
         .exchange-btn {
           position: relative; overflow: hidden;
@@ -1125,12 +1124,12 @@ export default function AtlasSwapApp() {
 
           {/* ── FORM STEP ── */}
           {step === "form" && (
-            <div className="atlasswap-card" style={{
+            <div className="atlasswap-card step-slide-back" style={{
               background: "rgba(255,255,255,0.035)",
               border: "1px solid rgba(255,255,255,0.09)",
               borderRadius: "24px", backdropFilter: "blur(32px)",
               boxShadow: "0 32px 80px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.06)",
-              overflow: "hidden",
+              overflow: "visible",
             }}>
               {/* Tabs */}
               <div style={{
@@ -1360,7 +1359,7 @@ export default function AtlasSwapApp() {
 
           {/* ── CONFIRM STEP ── */}
           {step === "confirm" && (
-            <div className="atlasswap-card" style={{
+            <div className="atlasswap-card step-slide-in" style={{
               background: "rgba(255,255,255,0.035)",
               border: "1px solid rgba(255,255,255,0.09)",
               borderRadius: "24px", backdropFilter: "blur(32px)",
@@ -1422,7 +1421,7 @@ export default function AtlasSwapApp() {
 
           {/* ── PROCESSING STEP ── */}
           {step === "processing" && (
-            <div className="atlasswap-card" style={{
+            <div className="atlasswap-card step-slide-in" style={{
               background: "rgba(255,255,255,0.035)",
               border: "1px solid rgba(255,255,255,0.09)",
               borderRadius: "24px", backdropFilter: "blur(32px)",
@@ -1448,7 +1447,7 @@ export default function AtlasSwapApp() {
 
           {/* ── DONE STEP ── */}
           {step === "done" && (
-            <div className="atlasswap-card" style={{
+            <div className="atlasswap-card step-slide-in" style={{
               background: "rgba(255,255,255,0.035)",
               border: "1px solid rgba(0,229,160,0.15)",
               borderRadius: "24px", backdropFilter: "blur(32px)",
