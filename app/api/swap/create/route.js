@@ -27,6 +27,81 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 12000) {
   }
 }
 
+function firstNonEmptyString(...values) {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return "";
+}
+
+function normalizeCreateResult(provider, data) {
+  const root = data?.data || data?.result || data || {};
+  const exchangeId = firstNonEmptyString(
+    root?.id,
+    root?.exchangeId,
+    root?.requestId,
+    root?.orderId,
+    root?.transactionId
+  );
+
+  if (provider === "ChangeNOW") {
+    return {
+      depositAddress: firstNonEmptyString(
+        root?.payinAddress,
+        root?.payinAddressWithTag,
+        root?.payin?.address,
+        root?.payin?.walletAddress,
+        root?.depositAddress,
+        root?.paymentAddress,
+        root?.addressDeposit
+      ),
+      depositExtraId: firstNonEmptyString(
+        root?.payinExtraId,
+        root?.payin?.extraId,
+        root?.payinMemo,
+        root?.memo,
+        root?.destinationTag,
+        root?.tag
+      ),
+      exchangeId,
+      provider,
+    };
+  }
+
+  if (provider === "SimpleSwap") {
+    return {
+      depositAddress: firstNonEmptyString(
+        root?.addressFrom,
+        root?.depositAddress,
+        root?.payinAddress
+      ),
+      depositExtraId: firstNonEmptyString(
+        root?.extraIdFrom,
+        root?.addressFromExtraId,
+        root?.memo
+      ),
+      exchangeId,
+      provider,
+    };
+  }
+
+  return {
+    depositAddress: firstNonEmptyString(
+      root?.addressDeposit,
+      root?.transaction?.addressDeposit,
+      root?.depositAddress,
+      root?.payinAddress
+    ),
+    depositExtraId: firstNonEmptyString(
+      root?.extraIdDeposit,
+      root?.transaction?.extraIdDeposit,
+      root?.memo
+    ),
+    exchangeId,
+    provider,
+  };
+}
+
 async function createWithProvider(provider, from, to, amount, destAddress, extraData = {}) {
   if (provider === "ChangeNOW") {
     if (!CN_KEY) throw new Error("ChangeNOW API key missing");
@@ -47,11 +122,9 @@ async function createWithProvider(provider, from, to, amount, destAddress, extra
     });
     if (!res.ok) throw new Error(`CN create ${res.status}`);
     const data = await res.json();
-    return {
-      depositAddress: data?.payinAddress || data?.payin?.address || "",
-      exchangeId: data?.id || data?.requestId || "",
-      provider,
-    };
+    const normalized = normalizeCreateResult(provider, data);
+    if (!normalized.depositAddress) throw new Error("ChangeNOW did not return a deposit address");
+    return normalized;
   }
 
   if (provider === "SimpleSwap") {
@@ -77,11 +150,9 @@ async function createWithProvider(provider, from, to, amount, destAddress, extra
     });
     if (!res.ok) throw new Error(`SS create ${res.status}`);
     const data = await res.json();
-    return {
-      depositAddress: data?.result?.addressFrom || data?.addressFrom || "",
-      exchangeId: data?.result?.id || data?.id || "",
-      provider,
-    };
+    const normalized = normalizeCreateResult(provider, data);
+    if (!normalized.depositAddress) throw new Error("SimpleSwap did not return a deposit address");
+    return normalized;
   }
 
   if (provider === "Swapzone") {
@@ -103,11 +174,9 @@ async function createWithProvider(provider, from, to, amount, destAddress, extra
     });
     if (!res.ok) throw new Error(`SZ create ${res.status}`);
     const data = await res.json();
-    return {
-      depositAddress: data?.addressDeposit || data?.transaction?.addressDeposit || "",
-      exchangeId: data?.id || data?.transaction?.id || "",
-      provider,
-    };
+    const normalized = normalizeCreateResult(provider, data);
+    if (!normalized.depositAddress) throw new Error("Swapzone did not return a deposit address");
+    return normalized;
   }
 
   throw new Error("Unknown provider");

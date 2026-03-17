@@ -52,7 +52,7 @@ async function fetchBestRate(from, to, amount) {
   if (!res.ok) throw new Error(`Rate API ${res.status}`);
   const data = await res.json();
   if (!data?.ok) throw new Error(data?.error || "Failed to fetch rates");
-  return { best: data.best, comparison: data.comparison || [] };
+  return { best: data.best, comparison: data.comparison || [], minAmount: data.minAmount || 0 };
 }
 
 async function createExchange(provider, from, to, amount, destAddress, extraData = {}) {
@@ -432,6 +432,7 @@ export default function AtlasSwapApp() {
 
   const [exchangeId, setExchangeId]         = useState("");
   const [depositAddress, setDepositAddress] = useState("");
+  const [depositExtraId, setDepositExtraId] = useState("");
   const [exchangeError, setExchangeError]   = useState("");
   const parsedSendAmt = parseFloat(sendAmt);
   const isValidSendAmount = Number.isFinite(parsedSendAmt) && parsedSendAmt > 0;
@@ -473,11 +474,16 @@ export default function AtlasSwapApp() {
         parsedSendAmt, destAddr.trim(),
         { quotaId: szQuotaId }
       );
+      if (!result?.depositAddress) {
+        throw new Error("Provider did not return a deposit address");
+      }
       setDepositAddress(result.depositAddress || "");
+      setDepositExtraId(result.depositExtraId || "");
       setExchangeId(result.exchangeId || "");
+      setBestProvider(result.provider || bestProvider);
       setStep("done");
     } catch (err) {
-      setExchangeError("Exchange creation failed. Please try again or use a different pair.");
+      setExchangeError(err?.message || "Exchange creation failed. Please try again or use a different pair.");
       setStep("confirm");
     }
   };
@@ -1286,6 +1292,30 @@ export default function AtlasSwapApp() {
                 </div>
               )}
 
+              {depositExtraId && (
+                <div style={{
+                  background: "rgba(255,255,255,0.04)",
+                  border: "1px solid rgba(255,255,255,0.1)",
+                  borderRadius: "14px", padding: "14px", marginBottom: "14px", textAlign: "left",
+                }}>
+                  <div style={{ fontSize: "10px", color: "rgba(240,244,255,0.3)", letterSpacing: "0.1em", marginBottom: "8px", fontWeight: 700 }}>
+                    EXTRA DEPOSIT TAG / MEMO
+                  </div>
+                  <div style={{ fontSize: "11px", color: "#fff", fontFamily: "monospace", wordBreak: "break-all", lineHeight: 1.7 }}>
+                    {depositExtraId}
+                  </div>
+                  <button
+                    onClick={() => navigator.clipboard.writeText(depositExtraId)}
+                    style={{
+                      marginTop: "10px", fontSize: "11px", color: "rgba(240,244,255,0.4)",
+                      background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)",
+                      borderRadius: "6px", padding: "5px 12px", cursor: "pointer",
+                      fontFamily: "'Outfit',sans-serif",
+                    }}
+                  >Copy Tag/Memo</button>
+                </div>
+              )}
+
               {/* Exchange ID */}
               {exchangeId && (
                 <div style={{
@@ -1308,7 +1338,7 @@ export default function AtlasSwapApp() {
 
               <button onClick={() => {
                 setStep("form"); setDestAddr("");
-                setDepositAddress(""); setExchangeId(""); setExchangeError("");
+                setDepositAddress(""); setDepositExtraId(""); setExchangeId(""); setExchangeError("");
               }} style={{
                 width: "100%", padding: "14px",
                 background: "rgba(0,229,160,0.09)",
