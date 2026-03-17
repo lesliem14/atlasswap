@@ -121,6 +121,9 @@ export async function POST(req) {
       .sort((a, b) => b.rate - a.rate);
 
     const liveOnly = comparison.filter((r) => !r.simulated);
+    const minAmountUsd = 1;
+    const fromUsdRate = BASE_RATES[from] || 1;
+    const minAmount = parseFloat((minAmountUsd / fromUsdRate).toPrecision(4));
     const best = liveOnly[0] || comparison[0] || {
       provider: "ChangeNOW",
       rate: fallbackRate(from, to, amount, 0.996),
@@ -129,7 +132,7 @@ export async function POST(req) {
       simulated: true,
     };
 
-    return NextResponse.json({ ok: true, best, comparison }, { status: 200 });
+    return NextResponse.json({ ok: true, best, comparison, minAmount }, { status: 200 });
   } catch {
     return NextResponse.json({ ok: false, error: "Failed to fetch rates" }, { status: 500 });
   }

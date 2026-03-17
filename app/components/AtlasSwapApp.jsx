@@ -382,6 +382,7 @@ export default function AtlasSwapApp() {
 
   // Store Swapzone quotaId from rate response — needed for create transaction
   const [szQuotaId, setSzQuotaId] = useState("");
+  const [minAmount, setMinAmount] = useState(0);
 
   // ── Keyboard shortcut: Ctrl+Shift+A opens backend panel ──
   useEffect(() => {
@@ -398,10 +399,11 @@ export default function AtlasSwapApp() {
     if (isNaN(parsed) || parsed <= 0) { setReceiveAmt(""); return; }
     setRateLoading(true);
     try {
-      const { best, comparison: comp } = await fetchBestRate(from, to, parsed);
+      const { best, comparison: comp, minAmount: min } = await fetchBestRate(from, to, parsed);
       setReceiveAmt(best.rate.toFixed(6));
       setBestProvider(best.provider);
       setComparison(comp);
+      if (Number.isFinite(min) && min > 0) setMinAmount(min);
       // Store Swapzone quotaId if it won or is in results
       const szResult = comp.find(r => r.provider === "Swapzone");
       if (szResult?.quotaId) setSzQuotaId(szResult.quotaId);
@@ -433,10 +435,15 @@ export default function AtlasSwapApp() {
   const [exchangeError, setExchangeError]   = useState("");
   const parsedSendAmt = parseFloat(sendAmt);
   const isValidSendAmount = Number.isFinite(parsedSendAmt) && parsedSendAmt > 0;
+  const isBelowMin = minAmount > 0 && isValidSendAmount && parsedSendAmt < minAmount;
 
   const handleExchange = () => {
     if (!destAddr.trim() || !isValidSendAmount) {
       setExchangeError("Enter a valid amount greater than 0 and a destination address.");
+      return;
+    }
+    if (isBelowMin) {
+      setExchangeError(`Minimum swap amount is ${minAmount} ${fromCoin}.`);
       return;
     }
     setLoading(true);
@@ -447,6 +454,10 @@ export default function AtlasSwapApp() {
   const handleConfirm = async () => {
     if (!isValidSendAmount) {
       setExchangeError("Invalid amount. Please enter a number greater than 0.");
+      return;
+    }
+    if (isBelowMin) {
+      setExchangeError(`Amount too small. Minimum for this pair is ${minAmount} ${fromCoin}.`);
       return;
     }
     const selectedRoute = comparison.find(p => p.provider === bestProvider);
@@ -1082,18 +1093,18 @@ export default function AtlasSwapApp() {
                 <button
                   className="exchange-btn"
                   onClick={handleExchange}
-                  disabled={!destAddr.trim() || !isValidSendAmount || loading || rateLoading}
+                  disabled={!destAddr.trim() || !isValidSendAmount || isBelowMin || loading || rateLoading}
                   style={{
                     width: "100%", padding: "15px",
-                    background: destAddr.trim() && isValidSendAmount && !rateLoading
+                    background: destAddr.trim() && isValidSendAmount && !isBelowMin && !rateLoading
                       ? "linear-gradient(135deg, #00E5A0 0%, #00C4FF 100%)"
                       : "rgba(255,255,255,0.07)",
                     border: "none", borderRadius: "14px",
-                    color: destAddr.trim() && isValidSendAmount && !rateLoading ? "#070B14" : "rgba(240,244,255,0.2)",
+                    color: destAddr.trim() && isValidSendAmount && !isBelowMin && !rateLoading ? "#070B14" : "rgba(240,244,255,0.2)",
                     fontFamily: "'Syne', sans-serif", fontWeight: 800, fontSize: "15px",
-                    cursor: destAddr.trim() && isValidSendAmount && !rateLoading ? "pointer" : "not-allowed",
+                    cursor: destAddr.trim() && isValidSendAmount && !isBelowMin && !rateLoading ? "pointer" : "not-allowed",
                     letterSpacing: "0.05em",
-                    boxShadow: destAddr.trim() && isValidSendAmount && !rateLoading
+                    boxShadow: destAddr.trim() && isValidSendAmount && !isBelowMin && !rateLoading
                       ? "0 8px 32px rgba(0,229,160,0.25)"
                       : "none",
                     transition: "all 0.25s ease",
