@@ -444,7 +444,7 @@ export default function AtlasSwapApp() {
       return;
     }
     if (isBelowMin) {
-      setExchangeError(`Minimum swap amount is ${minAmount} ${fromCoin}.`);
+      setExchangeError(`Minimum swap amount is ${minAmount} ${fromCoin} (~$1 USD). Please increase your amount.`);
       return;
     }
     setLoading(true);
@@ -483,7 +483,15 @@ export default function AtlasSwapApp() {
       setBestProvider(result.provider || bestProvider);
       setStep("done");
     } catch (err) {
-      setExchangeError(err?.message || "Exchange creation failed. Please try again or use a different pair.");
+      const msg = String(err?.message || "").toLowerCase();
+      const friendly = msg.includes("minimum") || msg.includes("small")
+        ? `Amount too small. Minimum for this pair is ${minAmount} ${fromCoin}.`
+        : msg.includes("requested provider")
+          ? "Selected provider failed. AtlasSwap attempted fallback routes, but all providers failed for this request."
+          : msg.includes("api key") || msg.includes("auth")
+            ? "Exchange provider temporarily unavailable. Please try again shortly."
+            : "Exchange creation failed. Please try a larger amount or a different pair.";
+      setExchangeError(friendly);
       setStep("confirm");
     }
   };
@@ -845,7 +853,7 @@ export default function AtlasSwapApp() {
             fontSize: "clamp(38px, 4.5vw, 56px)", lineHeight: 1.05,
             letterSpacing: "-0.035em", marginBottom: "22px",
           }}>
-            The World's<br/>
+            The World&apos;s<br/>
             <span style={{
               background: "linear-gradient(90deg, #00E5A0 0%, #00C4FF 60%, #7B9EF0 100%)",
               WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent",
@@ -1271,22 +1279,29 @@ export default function AtlasSwapApp() {
               {depositAddress && (
                 <div style={{
                   background: "rgba(0,229,160,0.05)",
-                  border: "1px solid rgba(0,229,160,0.2)",
-                  borderRadius: "14px", padding: "16px", marginBottom: "14px", textAlign: "left",
+                  border: "1px solid rgba(0,229,160,0.25)",
+                  borderRadius: "14px", padding: "18px", marginBottom: "14px", textAlign: "left",
                 }}>
-                  <div style={{ fontSize: "10px", color: "rgba(240,244,255,0.3)", letterSpacing: "0.1em", marginBottom: "8px", fontWeight: 700 }}>
-                    SEND {fromCoin} TO THIS ADDRESS
+                  <div style={{ fontSize: "10px", color: "rgba(240,244,255,0.4)", letterSpacing: "0.1em", marginBottom: "10px", fontWeight: 700 }}>
+                    SEND {sendAmt} {fromCoin} TO THIS ADDRESS
                   </div>
-                  <div style={{ fontSize: "11px", color: "#00E5A0", fontFamily: "monospace", wordBreak: "break-all", lineHeight: 1.7 }}>
+                  <div style={{
+                    fontSize: "13px", color: "#00E5A0", fontFamily: "monospace",
+                    wordBreak: "break-all", lineHeight: 1.8, userSelect: "all",
+                    background: "rgba(0,229,160,0.08)", borderRadius: "8px",
+                    padding: "10px 12px", marginBottom: "10px",
+                    border: "1px solid rgba(0,229,160,0.15)",
+                  }}>
                     {depositAddress}
                   </div>
                   <button
                     onClick={() => navigator.clipboard.writeText(depositAddress)}
                     style={{
-                      marginTop: "10px", fontSize: "11px", color: "rgba(240,244,255,0.4)",
-                      background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)",
-                      borderRadius: "6px", padding: "5px 12px", cursor: "pointer",
-                      fontFamily: "'Outfit',sans-serif",
+                      fontSize: "12px", color: "#070B14",
+                      background: "linear-gradient(135deg,#00E5A0,#00C4FF)",
+                      border: "none", borderRadius: "8px", padding: "8px 18px",
+                      cursor: "pointer", fontFamily: "'Outfit',sans-serif",
+                      fontWeight: 700, letterSpacing: "0.04em",
                     }}
                   >Copy Address</button>
                 </div>
@@ -1294,21 +1309,21 @@ export default function AtlasSwapApp() {
 
               {depositExtraId && (
                 <div style={{
-                  background: "rgba(255,255,255,0.04)",
-                  border: "1px solid rgba(255,255,255,0.1)",
-                  borderRadius: "14px", padding: "14px", marginBottom: "14px", textAlign: "left",
+                  background: "rgba(247,147,26,0.07)",
+                  border: "1px solid rgba(247,147,26,0.2)",
+                  borderRadius: "12px", padding: "14px", marginBottom: "14px", textAlign: "left",
                 }}>
-                  <div style={{ fontSize: "10px", color: "rgba(240,244,255,0.3)", letterSpacing: "0.1em", marginBottom: "8px", fontWeight: 700 }}>
-                    EXTRA DEPOSIT TAG / MEMO
+                  <div style={{ fontSize: "10px", color: "rgba(247,147,26,0.7)", letterSpacing: "0.1em", marginBottom: "8px", fontWeight: 700 }}>
+                    REQUIRED MEMO / TAG - INCLUDE WITH TRANSFER
                   </div>
-                  <div style={{ fontSize: "11px", color: "#fff", fontFamily: "monospace", wordBreak: "break-all", lineHeight: 1.7 }}>
+                  <div style={{ fontSize: "13px", color: "#F7931A", fontFamily: "monospace", wordBreak: "break-all", lineHeight: 1.7, userSelect: "all" }}>
                     {depositExtraId}
                   </div>
                   <button
                     onClick={() => navigator.clipboard.writeText(depositExtraId)}
                     style={{
                       marginTop: "10px", fontSize: "11px", color: "rgba(240,244,255,0.4)",
-                      background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)",
+                      background: "rgba(247,147,26,0.12)", border: "1px solid rgba(247,147,26,0.2)",
                       borderRadius: "6px", padding: "5px 12px", cursor: "pointer",
                       fontFamily: "'Outfit',sans-serif",
                     }}
@@ -1857,7 +1872,7 @@ export default function AtlasSwapApp() {
             {/* Mission statement */}
             <div style={{background:"rgba(0,229,160,0.05)",border:"1px solid rgba(0,229,160,0.14)",borderRadius:"14px",padding:"20px 22px",marginBottom:"22px"}}>
               <div style={{fontFamily:"'Syne',sans-serif",fontWeight:700,fontSize:"16px",lineHeight:1.55,color:"#fff",letterSpacing:"-0.01em",marginBottom:"10px"}}>
-                "Access to the best exchange rate should be automatic, instant, and require nothing from you except a wallet address."
+                &quot;Access to the best exchange rate should be automatic, instant, and require nothing from you except a wallet address.&quot;
               </div>
               <div style={{fontSize:"12px",color:"rgba(0,229,160,0.7)",fontWeight:600,letterSpacing:"0.05em"}}>— THE ATLASSWAP MISSION</div>
             </div>

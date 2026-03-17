@@ -4,7 +4,7 @@ const CN_KEY = process.env.CHANGENOW_API_KEY || process.env.NEXT_PUBLIC_CHANGENO
 const SS_KEY = process.env.SIMPLESWAP_API_KEY || process.env.NEXT_PUBLIC_SIMPLESWAP_API_KEY || "";
 const SZ_KEY = process.env.SWAPZONE_API_KEY || process.env.NEXT_PUBLIC_SWAPZONE_API_KEY || "";
 
-const CN_BASE = "https://api.changenow.io/v2";
+const CN_CREATE_BASE = "https://api.changenow.io/v1";
 const SS_BASE = "https://api.simpleswap.io/v3";
 const SZ_BASE = "https://api.swapzone.io/v1";
 const PROVIDERS = ["ChangeNOW", "SimpleSwap", "Swapzone"];
@@ -24,6 +24,14 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 12000) {
     return await fetch(url, { ...options, signal: controller.signal });
   } finally {
     clearTimeout(timeoutId);
+  }
+}
+
+async function parseJsonSafe(res) {
+  try {
+    return await res.json();
+  } catch {
+    return {};
   }
 }
 
@@ -105,23 +113,21 @@ function normalizeCreateResult(provider, data) {
 async function createWithProvider(provider, from, to, amount, destAddress, extraData = {}) {
   if (provider === "ChangeNOW") {
     if (!CN_KEY) throw new Error("ChangeNOW API key missing");
-    const res = await fetchWithTimeout(`${CN_BASE}/exchange`, {
+    const res = await fetchWithTimeout(`${CN_CREATE_BASE}/transactions/${CN_KEY}`, {
       method: "POST",
       headers: {
-        "x-changenow-api-key": CN_KEY,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        fromCurrency: from.toLowerCase(),
-        toCurrency: to.toLowerCase(),
-        fromAmount: amount,
-        toAddress: destAddress,
+        from: from.toLowerCase(),
+        to: to.toLowerCase(),
+        amount,
+        address: destAddress,
         flow: "standard",
-        type: "direct",
       }),
     });
-    if (!res.ok) throw new Error(`CN create ${res.status}`);
-    const data = await res.json();
+    const data = await parseJsonSafe(res);
+    if (!res.ok) throw new Error(`CN create ${res.status}: ${JSON.stringify(data)}`);
     const normalized = normalizeCreateResult(provider, data);
     if (!normalized.depositAddress) throw new Error("ChangeNOW did not return a deposit address");
     return normalized;
@@ -148,8 +154,8 @@ async function createWithProvider(provider, from, to, amount, destAddress, extra
         addressTo: destAddress,
       }),
     });
-    if (!res.ok) throw new Error(`SS create ${res.status}`);
-    const data = await res.json();
+    const data = await parseJsonSafe(res);
+    if (!res.ok) throw new Error(`SS create ${res.status}: ${JSON.stringify(data)}`);
     const normalized = normalizeCreateResult(provider, data);
     if (!normalized.depositAddress) throw new Error("SimpleSwap did not return a deposit address");
     return normalized;
@@ -157,23 +163,59 @@ async function createWithProvider(provider, from, to, amount, destAddress, extra
 
   if (provider === "Swapzone") {
     if (!SZ_KEY) throw new Error("Swapzone API key missing");
-    const res = await fetchWithTimeout(`${SZ_BASE}/exchange/create`, {
-      method: "POST",
-      headers: {
-        "x-api-key": SZ_KEY,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
+    const fetchSwapzoneQuotaId = async () => {
+      const params = new URLSearchParams({
+        from: from.toLowerCase(),
+        to: to.toLowerCase(),
+        amount: String(amount),
+        rateType: "all",
+        chooseRate: "best",
+        noRefundAddress: "false",
+        apikey: SZ_KEY,
+      });
+      const quotaRes = await fetchWithTimeout(`${SZ_BASE}/exchange/get-rate?${params.toString()}`, {
+        headers: { "x-api-key": SZ_KEY },
+      });
+      const quotaData = await parseJsonSafe(quotaRes);
+      if (!quotaRes.ok || !quotaData?.quotaId) {
+        throw new Error(`SZ quota fetch failed ${quotaRes.status}: ${JSON.stringify(quotaData)}`);
+      }
+      return quotaData.quotaId;
+    };
+
+    const createWithQuota = async (quotaId) => {
+      const body = {
         from: from.toLowerCase(),
         to: to.toLowerCase(),
         amountDeposit: amount,
         addressReceive: destAddress,
-        quotaId: extraData?.quotaId || "",
         apikey: SZ_KEY,
-      }),
-    });
-    if (!res.ok) throw new Error(`SZ create ${res.status}`);
-    const data = await res.json();
+      };
+      if (quotaId) body.quotaId = quotaId;
+      return fetchWithTimeout(`${SZ_BASE}/exchange/create`, {
+        method: "POST",
+        headers: {
+          "x-api-key": SZ_KEY,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(body),
+      });
+    };
+
+    let quotaId = firstNonEmptyString(extraData?.quotaId);
+    if (!quotaId) quotaId = await fetchSwapzoneQuotaId();
+
+    let res = await createWithQuota(quotaId);
+    let data = await parseJsonSafe(res);
+    const quotaErrorText = JSON.stringify(data).toLowerCase();
+    const shouldRefreshQuota = !res.ok && (quotaErrorText.includes("quota") || quotaErrorText.includes("expired"));
+    if (shouldRefreshQuota) {
+      quotaId = await fetchSwapzoneQuotaId();
+      res = await createWithQuota(quotaId);
+      data = await parseJsonSafe(res);
+    }
+
+    if (!res.ok) throw new Error(`SZ create ${res.status}: ${JSON.stringify(data)}`);
     const normalized = normalizeCreateResult(provider, data);
     if (!normalized.depositAddress) throw new Error("Swapzone did not return a deposit address");
     return normalized;
@@ -184,15 +226,22 @@ async function createWithProvider(provider, from, to, amount, destAddress, extra
 
 async function createExchange(provider, from, to, amount, destAddress, extraData = {}) {
   const orderedProviders = [provider, ...PROVIDERS.filter((p) => p !== provider)];
-  let lastError = null;
+  const failures = [];
   for (const currentProvider of orderedProviders) {
     try {
       return await createWithProvider(currentProvider, from, to, amount, destAddress, extraData);
     } catch (err) {
-      lastError = err;
+      failures.push({ provider: currentProvider, message: err?.message || "Unknown provider failure" });
     }
   }
-  throw lastError || new Error("All providers failed");
+  const requestedFailure = failures.find((f) => f.provider === provider);
+  const fallbackFailures = failures.filter((f) => f.provider !== provider);
+  const messageParts = [];
+  if (requestedFailure) messageParts.push(`Requested provider ${provider} failed: ${requestedFailure.message}`);
+  if (fallbackFailures.length > 0) {
+    messageParts.push(`Fallback providers failed: ${fallbackFailures.map((f) => `${f.provider}: ${f.message}`).join(" | ")}`);
+  }
+  throw new Error(messageParts.join(" -- ") || "All providers failed");
 }
 
 export async function POST(req) {
