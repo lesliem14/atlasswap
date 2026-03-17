@@ -136,28 +136,50 @@ function extractSwapzoneQuotaId(data) {
 async function createWithProvider(provider, from, to, amount, destAddress, extraData = {}) {
   if (provider === "ChangeNOW") {
     if (!CN_KEY) throw new Error("ChangeNOW API key missing");
+    const amountStr = String(amount);
+    const lowerFrom = from.toLowerCase();
+    const lowerTo = to.toLowerCase();
     const endpoints = [
       {
         url: `${CN_CREATE_BASE}/transactions/${CN_KEY}`,
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
         body: {
-          from: from.toLowerCase(),
-          to: to.toLowerCase(),
-          amount,
+          from: lowerFrom,
+          to: lowerTo,
+          amount: amountStr,
           address: destAddress,
-          flow: "standard",
         },
       },
       {
         url: `${CN_CREATE_BASE}/transactions/${CN_KEY}`,
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
         body: {
-          fromCurrency: from.toLowerCase(),
-          toCurrency: to.toLowerCase(),
-          fromAmount: amount,
+          from: lowerFrom,
+          to: lowerTo,
+          amount,
+          address: destAddress,
+        },
+      },
+      {
+        url: `${CN_CREATE_BASE}/transactions/${CN_KEY}`,
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: {
+          fromCurrency: lowerFrom,
+          toCurrency: lowerTo,
+          fromAmount: amountStr,
           toAddress: destAddress,
           flow: "standard",
           type: "direct",
+        },
+      },
+      {
+        url: `${CN_CREATE_BASE}/transactions/${CN_KEY}/`,
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: {
+          from: lowerFrom,
+          to: lowerTo,
+          amount: amountStr,
+          address: destAddress,
         },
       },
       {
@@ -165,11 +187,12 @@ async function createWithProvider(provider, from, to, amount, destAddress, extra
         headers: {
           "x-changenow-api-key": CN_KEY,
           "Content-Type": "application/json",
+          Accept: "application/json",
         },
         body: {
-          fromCurrency: from.toLowerCase(),
-          toCurrency: to.toLowerCase(),
-          fromAmount: amount,
+          fromCurrency: lowerFrom,
+          toCurrency: lowerTo,
+          fromAmount: amountStr,
           toAddress: destAddress,
           flow: "standard",
           type: "direct",
@@ -177,7 +200,7 @@ async function createWithProvider(provider, from, to, amount, destAddress, extra
       },
     ];
 
-    let lastDetail = "";
+    const errors = [];
     for (const attempt of endpoints) {
       const res = await fetchWithTimeout(attempt.url, {
         method: "POST",
@@ -187,9 +210,9 @@ async function createWithProvider(provider, from, to, amount, destAddress, extra
       const data = await parseJsonSafe(res);
       const normalized = normalizeCreateResult(provider, data);
       if (res.ok && normalized.depositAddress) return normalized;
-      lastDetail = `CN create ${res.status}: ${JSON.stringify(data)}`;
+      errors.push(`CN create ${res.status} at ${attempt.url}: ${JSON.stringify(data)}`);
     }
-    throw new Error(lastDetail || "ChangeNOW create failed");
+    throw new Error(errors.join(" | ") || "ChangeNOW create failed");
   }
 
   if (provider === "SimpleSwap") {
