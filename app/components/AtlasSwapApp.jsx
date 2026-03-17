@@ -41,267 +41,29 @@ const BASE_RATES = {
 };
 
 // ═══════════════════════════════════════════════════════════════
-// API LAYER — ChangeNOW V2 + SimpleSwap V3 + Swapzone
-// All 3 called simultaneously via Promise.allSettled()
-// Best rate wins and routes the swap
+// API LAYER — proxied through server routes (/api/swap/*)
 // ═══════════════════════════════════════════════════════════════
-const CN_KEY  = process.env.NEXT_PUBLIC_CHANGENOW_API_KEY  || "";
-const SS_KEY  = process.env.NEXT_PUBLIC_SIMPLESWAP_API_KEY || "";
-const SZ_KEY  = process.env.NEXT_PUBLIC_SWAPZONE_API_KEY   || "";
-
-const CN_BASE = "https://api.changenow.io/v2";
-const SS_BASE = "https://api.simpleswap.io/v3";
-const SZ_BASE = "https://api.swapzone.io/v1";
-
-// ── SimpleSwap V3: coin → network mapping ──
-const SS_NETWORKS = {
-  BTC:"btc", ETH:"eth", USDT:"eth", BNB:"bsc", SOL:"sol",
-  USDC:"eth", XRP:"xrp", DOGE:"doge", ADA:"ada", AVAX:"avax",
-  TRX:"trx", LINK:"eth", DOT:"dot", MATIC:"matic", LTC:"ltc",
-  UNI:"eth", ATOM:"atom", XMR:"xmr", TON:"ton", SHIB:"eth",
-  ARB:"arbitrum", OP:"optimism", INJ:"inj", SUI:"sui", APT:"apt",
-};
-
-// ─────────────────────────────────────────────────────────────
-// 1. CHANGENOW V2
-//    Auth: header  x-changenow-api-key
-//    Rate: GET /v2/exchange/estimated-amount
-//    Create: POST /v2/exchange
-// ─────────────────────────────────────────────────────────────
-async function fetchChangeNowRate(from, to, amount) {
-  try {
-    if (!CN_KEY) throw new Error("No CN key");
-    const url = `${CN_BASE}/exchange/estimated-amount?fromCurrency=${from.toLowerCase()}&toCurrency=${to.toLowerCase()}&fromAmount=${amount}&flow=standard&type=direct`;
-    const res = await fetch(url, {
-      headers: { "x-changenow-api-key": CN_KEY },
-    });
-    if (!res.ok) throw new Error(`ChangeNOW ${res.status}`);
-    const data = await res.json();
-    const estimated = parseFloat(data?.toAmount || data?.estimatedAmount || 0);
-    if (!estimated || isNaN(estimated)) throw new Error("No CN amount");
-    return {
-      provider: "ChangeNOW",
-      rate: estimated,
-      rawRate: estimated / amount,
-      available: true,
-      simulated: false,
-    };
-  } catch {
-    const rate = ((amount * (BASE_RATES[from] || 1)) / (BASE_RATES[to] || 1)) * 0.996;
-    return { provider: "ChangeNOW", rate, rawRate: rate / amount, available: true, simulated: true };
-  }
-}
-
-// ─────────────────────────────────────────────────────────────
-// 2. SIMPLESWAP V3
-//    Auth: header  x-api-key
-//    Rate: GET /v3/estimates
-//    Create: POST /v3/exchanges
-// ─────────────────────────────────────────────────────────────
-async function fetchSimpleSwapRate(from, to, amount) {
-  try {
-    if (!SS_KEY) throw new Error("No SS key");
-    const netFrom = SS_NETWORKS[from] || from.toLowerCase();
-    const netTo   = SS_NETWORKS[to]   || to.toLowerCase();
-    const url = `${SS_BASE}/estimates?tickerFrom=${from.toLowerCase()}&networkFrom=${netFrom}&tickerTo=${to.toLowerCase()}&networkTo=${netTo}&amount=${amount}&fixed=false`;
-    const res = await fetch(url, {
-      headers: { "x-api-key": SS_KEY, "Accept": "application/json" },
-    });
-    if (!res.ok) throw new Error(`SimpleSwap ${res.status}`);
-    const data = await res.json();
-    // V3 response: { result: { amountTo: "..." } } or { result: "..." }
-    const estimated = parseFloat(data?.result?.amountTo ?? data?.result ?? 0);
-    if (!estimated || isNaN(estimated)) throw new Error("No SS amount");
-    return {
-      provider: "SimpleSwap",
-      rate: estimated,
-      rawRate: estimated / amount,
-      available: true,
-      simulated: false,
-    };
-  } catch {
-    const rate = ((amount * (BASE_RATES[from] || 1)) / (BASE_RATES[to] || 1)) * 0.992;
-    return { provider: "SimpleSwap", rate, rawRate: rate / amount, available: true, simulated: true };
-  }
-}
-
-// ─────────────────────────────────────────────────────────────
-// 3. SWAPZONE  (instant exchange — not DEX)
-//    Auth: header  x-api-key  AND  query param  apikey
-//    Rate: GET /v1/exchange/get-rate
-//    Create: POST /v1/exchange/create
-//    Status: GET /v1/exchange/tx?id=
-// ─────────────────────────────────────────────────────────────
-async function fetchSwapzoneRate(from, to, amount) {
-  try {
-    if (!SZ_KEY) throw new Error("No SZ key");
-    const url = `${SZ_BASE}/exchange/get-rate?from=${from.toLowerCase()}&to=${to.toLowerCase()}&amount=${amount}&rateType=all&chooseRate=best&noRefundAddress=false&apikey=${SZ_KEY}`;
-    const res = await fetch(url, {
-      headers: { "x-api-key": SZ_KEY },
-    });
-    if (!res.ok) throw new Error(`Swapzone ${res.status}`);
-    const data = await res.json();
-    // Response is a single best-rate object (chooseRate=best)
-    // Fields: amountTo, quotaId, adapter, minAmount, maxAmount
-    const amountTo = parseFloat(data?.amountTo ?? 0);
-    if (!amountTo || isNaN(amountTo)) throw new Error("No SZ amount");
-    return {
-      provider: "Swapzone",
-      rate: amountTo,
-      rawRate: amountTo / amount,
-      quotaId: data?.quotaId || "",
-      adapter: data?.adapter || "",
-      available: true,
-      simulated: false,
-    };
-  } catch {
-    const rate = ((amount * (BASE_RATES[from] || 1)) / (BASE_RATES[to] || 1)) * 0.989;
-    return { provider: "Swapzone", rate, rawRate: rate / amount, available: true, simulated: true };
-  }
-}
-
-// ─────────────────────────────────────────────────────────────
-// AGGREGATOR — runs all 3 simultaneously, returns best
-// ─────────────────────────────────────────────────────────────
 async function fetchBestRate(from, to, amount) {
-  const [cn, ss, sz] = await Promise.allSettled([
-    fetchChangeNowRate(from, to, amount),
-    fetchSimpleSwapRate(from, to, amount),
-    fetchSwapzoneRate(from, to, amount),
-  ]);
-
-  const results = [cn, ss, sz]
-    .filter(r => r.status === "fulfilled" && r.value.available && r.value.rate > 0)
-    .map(r => r.value)
-    .sort((a, b) => b.rate - a.rate);
-
-  const best = results[0] || {
-    provider: "ChangeNOW",
-    rate: ((amount * (BASE_RATES[from] || 1)) / (BASE_RATES[to] || 1)) * 0.996,
-    available: true,
-    simulated: true,
-  };
-
-  return { best, comparison: results };
-}
-
-// ─────────────────────────────────────────────────────────────
-// CREATE EXCHANGE — calls winning provider, falls back to others
-// Returns { depositAddress, exchangeId, provider }
-// ─────────────────────────────────────────────────────────────
-async function createExchangeChangeNow(from, to, amount, destAddress) {
-  if (!CN_KEY) throw new Error("No ChangeNOW key");
-  const res = await fetch(`${CN_BASE}/exchange`, {
+  const res = await fetch("/api/swap/rate", {
     method: "POST",
-    headers: { "x-changenow-api-key": CN_KEY, "Content-Type": "application/json" },
-    body: JSON.stringify({
-      fromCurrency: from.toLowerCase(),
-      toCurrency:   to.toLowerCase(),
-      fromAmount:   amount,
-      toAddress:    destAddress,
-      flow:         "standard",
-      type:         "direct",
-    }),
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ from, to, amount }),
   });
+  if (!res.ok) throw new Error(`Rate API ${res.status}`);
   const data = await res.json();
-  if (!res.ok) throw new Error(`ChangeNOW ${res.status}: ${data?.message || ""}`);
-  const depositAddress = data?.payinAddress || data?.payin?.address || "";
-  const exchangeId     = data?.id || data?.requestId || "";
-  if (!depositAddress) throw new Error("ChangeNOW returned no deposit address");
-  return { depositAddress, exchangeId, provider: "ChangeNOW" };
+  if (!data?.ok) throw new Error(data?.error || "Failed to fetch rates");
+  return { best: data.best, comparison: data.comparison || [] };
 }
 
-async function createExchangeSimpleSwap(from, to, amount, destAddress) {
-  if (!SS_KEY) throw new Error("No SimpleSwap key");
-  const netFrom = SS_NETWORKS[from] || from.toLowerCase();
-  const netTo   = SS_NETWORKS[to]   || to.toLowerCase();
-  const res = await fetch(`${SS_BASE}/exchanges`, {
-    method: "POST",
-    headers: { "x-api-key": SS_KEY, "Content-Type": "application/json", "Accept": "application/json" },
-    body: JSON.stringify({
-      tickerFrom:  from.toLowerCase(),
-      networkFrom: netFrom,
-      tickerTo:    to.toLowerCase(),
-      networkTo:   netTo,
-      amount:      String(amount),
-      fixed:       false,
-      addressTo:   destAddress,
-    }),
-  });
-  const data = await res.json();
-  if (!res.ok) throw new Error(`SimpleSwap ${res.status}: ${data?.message || ""}`);
-  // V3 wraps result in data.result or returns directly
-  const result         = data?.result ?? data;
-  const depositAddress = result?.addressFrom || result?.payin_address || "";
-  const exchangeId     = result?.id || result?.exchange_id || "";
-  if (!depositAddress) throw new Error("SimpleSwap returned no deposit address");
-  return { depositAddress, exchangeId, provider: "SimpleSwap" };
-}
-
-async function createExchangeSwapzone(from, to, amount, destAddress, quotaId) {
-  if (!SZ_KEY) throw new Error("No Swapzone key");
-  const body = {
-    from:           from.toLowerCase(),
-    to:             to.toLowerCase(),
-    amountDeposit:  amount,
-    addressReceive: destAddress,
-    apikey:         SZ_KEY,
-  };
-  if (quotaId) body.quotaId = quotaId;
-  const res = await fetch(`${SZ_BASE}/exchange/create`, {
-    method: "POST",
-    headers: { "x-api-key": SZ_KEY, "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  const data = await res.json();
-  if (!res.ok) throw new Error(`Swapzone ${res.status}: ${data?.message || ""}`);
-  const tx             = data?.transaction ?? data;
-  const depositAddress = tx?.addressDeposit || data?.addressDeposit || "";
-  const exchangeId     = tx?.id || data?.id || "";
-  if (!depositAddress) throw new Error("Swapzone returned no deposit address");
-  return { depositAddress, exchangeId, provider: "Swapzone" };
-}
-
-// Tries winning provider first, then falls back to the other two
 async function createExchange(provider, from, to, amount, destAddress, extraData = {}) {
-  const order = [provider, ...["ChangeNOW","SimpleSwap","Swapzone"].filter(p => p !== provider)];
-  let lastErr = null;
-  for (const p of order) {
-    try {
-      if (p === "ChangeNOW")  return await createExchangeChangeNow(from, to, amount, destAddress);
-      if (p === "SimpleSwap") return await createExchangeSimpleSwap(from, to, amount, destAddress);
-      if (p === "Swapzone")   return await createExchangeSwapzone(from, to, amount, destAddress, extraData.quotaId);
-    } catch (e) {
-      lastErr = e;
-      console.warn(`${p} create failed:`, e.message, "— trying next provider");
-    }
-  }
-  throw lastErr || new Error("All providers failed");
-}
-
-// ─────────────────────────────────────────────────────────────
-// GET TRANSACTION STATUS — for post-swap tracking
-// ─────────────────────────────────────────────────────────────
-async function getTransactionStatus(provider, exchangeId) {
-  try {
-    if (provider === "ChangeNOW") {
-      const res = await fetch(`${CN_BASE}/exchange/by-id?id=${exchangeId}`, {
-        headers: { "x-changenow-api-key": CN_KEY },
-      });
-      const data = await res.json();
-      return data?.status || "unknown";
-    }
-    if (provider === "Swapzone") {
-      const res = await fetch(`${SZ_BASE}/exchange/tx?id=${exchangeId}`, {
-        headers: { "x-api-key": SZ_KEY },
-      });
-      const data = await res.json();
-      return data?.transaction?.status || "unknown";
-    }
-    return "unknown";
-  } catch {
-    return "unknown";
-  }
+  const res = await fetch("/api/swap/create", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ provider, from, to, amount, destAddress, extraData }),
+  });
+  const data = await res.json();
+  if (!res.ok || !data?.ok) throw new Error(data?.error || `Create API ${res.status}`);
+  return data.result;
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -669,21 +431,35 @@ export default function AtlasSwapApp() {
   const [exchangeId, setExchangeId]         = useState("");
   const [depositAddress, setDepositAddress] = useState("");
   const [exchangeError, setExchangeError]   = useState("");
+  const parsedSendAmt = parseFloat(sendAmt);
+  const isValidSendAmount = Number.isFinite(parsedSendAmt) && parsedSendAmt > 0;
 
   const handleExchange = () => {
-    if (!destAddr.trim()) return;
+    if (!destAddr.trim() || !isValidSendAmount) {
+      setExchangeError("Enter a valid amount greater than 0 and a destination address.");
+      return;
+    }
     setLoading(true);
     setExchangeError("");
     setTimeout(() => { setLoading(false); setStep("confirm"); }, 700);
   };
 
   const handleConfirm = async () => {
+    if (!isValidSendAmount) {
+      setExchangeError("Invalid amount. Please enter a number greater than 0.");
+      return;
+    }
+    const selectedRoute = comparison.find(p => p.provider === bestProvider);
+    if (selectedRoute?.simulated) {
+      setExchangeError("Live quote unavailable for the selected route. Refresh rates or try another pair.");
+      return;
+    }
     setStep("processing");
     setExchangeError("");
     try {
       const result = await createExchange(
         bestProvider, fromCoin, toCoin,
-        parseFloat(sendAmt), destAddr.trim(),
+        parsedSendAmt, destAddr.trim(),
         { quotaId: szQuotaId }
       );
       setDepositAddress(result.depositAddress || "");
@@ -1306,18 +1082,18 @@ export default function AtlasSwapApp() {
                 <button
                   className="exchange-btn"
                   onClick={handleExchange}
-                  disabled={!destAddr.trim() || loading || rateLoading}
+                  disabled={!destAddr.trim() || !isValidSendAmount || loading || rateLoading}
                   style={{
                     width: "100%", padding: "15px",
-                    background: destAddr.trim() && !rateLoading
+                    background: destAddr.trim() && isValidSendAmount && !rateLoading
                       ? "linear-gradient(135deg, #00E5A0 0%, #00C4FF 100%)"
                       : "rgba(255,255,255,0.07)",
                     border: "none", borderRadius: "14px",
-                    color: destAddr.trim() && !rateLoading ? "#070B14" : "rgba(240,244,255,0.2)",
+                    color: destAddr.trim() && isValidSendAmount && !rateLoading ? "#070B14" : "rgba(240,244,255,0.2)",
                     fontFamily: "'Syne', sans-serif", fontWeight: 800, fontSize: "15px",
-                    cursor: destAddr.trim() && !rateLoading ? "pointer" : "not-allowed",
+                    cursor: destAddr.trim() && isValidSendAmount && !rateLoading ? "pointer" : "not-allowed",
                     letterSpacing: "0.05em",
-                    boxShadow: destAddr.trim() && !rateLoading
+                    boxShadow: destAddr.trim() && isValidSendAmount && !rateLoading
                       ? "0 8px 32px rgba(0,229,160,0.25)"
                       : "none",
                     transition: "all 0.25s ease",
