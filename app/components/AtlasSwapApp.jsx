@@ -1092,12 +1092,13 @@ export default function AtlasSwapApp() {
                     fontSize: "10px", color: "rgba(240,244,255,0.35)",
                     fontWeight: 700, letterSpacing: "0.1em", marginBottom: "8px",
                   }}>YOU GET (ESTIMATED)</div>
-                  <div style={{
+                  <div className="input-wrap swap-container" style={{
                     display: "flex", alignItems: "center", gap: "10px",
                     background: "rgba(0,229,160,0.04)",
                     border: "1px solid rgba(0,229,160,0.12)",
                     borderRadius: "16px", padding: "13px 14px",
-                    position: "relative", overflow: "hidden",
+                    position: "relative", overflow: "visible",
+                    minWidth: 0,
                   }}>
                     {rateLoading && (
                       <div style={{
@@ -1105,6 +1106,8 @@ export default function AtlasSwapApp() {
                         background: "linear-gradient(90deg, transparent, #00E5A0, transparent)",
                         backgroundSize: "400px 2px",
                         animation: "shimmerLine 1.2s ease-in-out infinite",
+                        borderBottomLeftRadius: "16px",
+                        borderBottomRightRadius: "16px",
                       }}/>
                     )}
                     <div style={{
@@ -1114,6 +1117,7 @@ export default function AtlasSwapApp() {
                       color: rateLoading ? "rgba(0,229,160,0.5)" : "#00E5A0",
                       padding: "2px 4px",
                       transition: "color 0.3s",
+                      minWidth: 0,
                     }}>
                       {receiveAmt || "0.000000"}
                     </div>
