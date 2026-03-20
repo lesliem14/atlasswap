@@ -638,6 +638,7 @@ export default function AtlasSwapApp() {
         .main-layout { display: flex; gap: 56px; align-items: flex-start; }
         .hero-column { flex: 1; max-width: 440px; padding-top: 12px; }
         .swap-widget { width: min(430px, 100%); flex-shrink: 0; }
+        .exchange-form-body { padding: 22px 22px 72px; }
         @media (max-width: 1080px) {
           .main-layout {
             flex-direction: column;
@@ -655,6 +656,7 @@ export default function AtlasSwapApp() {
             max-width: 100%;
             padding-top: 0;
           }
+          .exchange-form-body { padding-bottom: 92px; }
         }
         @media (max-width: 640px) {
           .coin-selector-trigger {
@@ -666,6 +668,7 @@ export default function AtlasSwapApp() {
             width: min(200px, calc(100vw - 28px)) !important;
             max-width: calc(100vw - 28px) !important;
           }
+          .exchange-form-body { padding-bottom: 110px; }
         }
 
         .nav-link {
@@ -1020,7 +1023,7 @@ export default function AtlasSwapApp() {
                 ))}
               </div>
 
-              <div style={{ padding: "22px 22px 20px" }}>
+              <div className="exchange-form-body">
 
                 {/* YOU SEND */}
                 <div style={{ marginBottom: "4px" }}>
@@ -1098,7 +1101,7 @@ export default function AtlasSwapApp() {
                     border: "1px solid rgba(0,229,160,0.12)",
                     borderRadius: "16px", padding: "13px 14px",
                     position: "relative", overflow: "visible",
-                    minWidth: 0,
+                    minWidth: 0, zIndex: 20,
                   }}>
                     {rateLoading && (
                       <div style={{
