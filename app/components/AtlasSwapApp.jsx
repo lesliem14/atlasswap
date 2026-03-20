@@ -69,13 +69,13 @@ async function createExchange(provider, from, to, amount, destAddress, extraData
 // ═══════════════════════════════════════════════════════════════
 // COIN SELECTOR — dropdown anchored inside card (no overflow issues)
 // ═══════════════════════════════════════════════════════════════
-function CoinSelector({ selected, onChange, exclude }) {
+function CoinSelector({ selected, onChange, exclude, tokenList = COINS }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const wrapRef = useRef(null);
-  const coin = COINS.find(c => c.symbol === selected) || COINS[0];
+  const coin = tokenList.find(c => c.symbol === selected) || tokenList[0] || COINS[0];
 
-  const filtered = COINS.filter(c =>
+  const filtered = tokenList.filter(c =>
     c.symbol !== exclude &&
     (c.symbol.toLowerCase().includes(query.toLowerCase()) ||
      c.name.toLowerCase().includes(query.toLowerCase()))
@@ -99,8 +99,13 @@ function CoinSelector({ selected, onChange, exclude }) {
 
   return (
     // Wrapper has position:relative so the dropdown anchors to it
-    <div ref={wrapRef} style={{ position: "relative", flexShrink: 0, zIndex: open ? 200 : 1 }}>
+    <div
+      ref={wrapRef}
+      className="coin-selector"
+      style={{ position: "relative", flexShrink: 0, minWidth: 0, maxWidth: "100%", zIndex: open ? 200 : 1 }}
+    >
       <button
+        className="coin-selector-trigger"
         onMouseDown={e => { e.preventDefault(); setOpen(o => !o); }}
         style={{
           display: "flex", alignItems: "center", gap: "8px",
@@ -111,6 +116,7 @@ function CoinSelector({ selected, onChange, exclude }) {
           transition: "all 0.2s", minWidth: "128px",
           boxShadow: open ? `0 0 16px ${coin.color}25` : "none",
           userSelect: "none", WebkitUserSelect: "none",
+          maxWidth: "100%", boxSizing: "border-box",
         }}
       >
         <div style={{
@@ -119,7 +125,7 @@ function CoinSelector({ selected, onChange, exclude }) {
           display: "flex", alignItems: "center", justifyContent: "center",
           fontSize: "12px", color: coin.color, fontWeight: 800, flexShrink: 0,
         }}>{coin.icon}</div>
-        <span style={{ letterSpacing: "0.04em" }}>{coin.symbol}</span>
+        <span style={{ letterSpacing: "0.04em", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{coin.symbol}</span>
         <span style={{
           marginLeft: "auto", fontSize: "9px", opacity: 0.4,
           transform: open ? "rotate(180deg)" : "none", transition: "transform 0.2s",
@@ -127,12 +133,13 @@ function CoinSelector({ selected, onChange, exclude }) {
       </button>
 
       {open && (
-        <div style={{
+        <div className="coin-selector-menu" style={{
           position: "absolute",
           top: "calc(100% + 6px)",
           right: 0,
           minWidth: "200px",
-          width: "220px",
+          width: "min(220px, calc(100vw - 32px))",
+          maxWidth: "calc(100vw - 32px)",
           background: "#0C1220",
           border: "1px solid rgba(255,255,255,0.14)",
           borderRadius: "16px",
@@ -430,6 +437,16 @@ export default function AtlasSwapApp() {
     setSendAmt(receiveAmt || "0.1");
   };
 
+  const handleFromCoinChange = useCallback((nextFrom) => {
+    if (nextFrom === toCoin) setToCoin(fromCoin);
+    setFromCoin(nextFrom);
+  }, [fromCoin, toCoin]);
+
+  const handleToCoinChange = useCallback((nextTo) => {
+    if (nextTo === fromCoin) setFromCoin(toCoin);
+    setToCoin(nextTo);
+  }, [fromCoin, toCoin]);
+
   const [exchangeId, setExchangeId]         = useState("");
   const [depositAddress, setDepositAddress] = useState("");
   const [depositExtraId, setDepositExtraId] = useState("");
@@ -613,6 +630,42 @@ export default function AtlasSwapApp() {
         .input-wrap:focus-within {
           border-color: rgba(0,229,160,0.35) !important;
           box-shadow: 0 0 0 3px rgba(0,229,160,0.06), 0 2px 20px rgba(0,229,160,0.05) !important;
+        }
+        .swap-widget, .swap-container, .swap-box { position: relative; }
+        .coin-selector { max-width: 100%; }
+        .coin-selector-trigger { width: 100%; max-width: 100%; }
+        .coin-selector-menu { max-width: calc(100vw - 32px); }
+        .main-layout { display: flex; gap: 56px; align-items: flex-start; }
+        .hero-column { flex: 1; max-width: 440px; padding-top: 12px; }
+        .swap-widget { width: min(430px, 100%); flex-shrink: 0; }
+        @media (max-width: 1080px) {
+          .main-layout {
+            flex-direction: column;
+            gap: 28px;
+            align-items: stretch;
+            padding: 36px 20px 32px !important;
+          }
+          .swap-widget {
+            order: 1;
+            width: min(560px, 100%);
+            margin: 0 auto;
+          }
+          .hero-column {
+            order: 2;
+            max-width: 100%;
+            padding-top: 0;
+          }
+        }
+        @media (max-width: 640px) {
+          .coin-selector-trigger {
+            min-width: 108px !important;
+            padding: 8px 10px !important;
+            gap: 6px !important;
+          }
+          .coin-selector-menu {
+            width: min(200px, calc(100vw - 28px)) !important;
+            max-width: calc(100vw - 28px) !important;
+          }
         }
 
         .nav-link {
@@ -830,15 +883,14 @@ export default function AtlasSwapApp() {
       </nav>
 
       {/* ── Main content ── */}
-      <div style={{
+      <div className="main-layout" style={{
         position: "relative", zIndex: 10,
         maxWidth: "1180px", margin: "0 auto",
         padding: "64px 48px 48px",
-        display: "flex", gap: "56px", alignItems: "flex-start",
       }}>
 
         {/* ── LEFT: Hero copy ── */}
-        <div style={{ flex: 1, paddingTop: "12px", maxWidth: "440px" }}>
+        <div className="hero-column">
 
           <div style={{
             display: "inline-flex", alignItems: "center", gap: "8px",
@@ -923,11 +975,11 @@ export default function AtlasSwapApp() {
         </div>
 
         {/* ── RIGHT: Swap card ── */}
-        <div style={{ width: "430px", flexShrink: 0 }}>
+        <div className="swap-widget">
 
           {/* ── FORM STEP ── */}
           {step === "form" && (
-            <div className="atlasswap-card step-slide-back" style={{
+            <div className="atlasswap-card step-slide-back swap-box" style={{
               background: "rgba(255,255,255,0.035)",
               border: "1px solid rgba(255,255,255,0.09)",
               borderRadius: "24px", backdropFilter: "blur(32px)",
@@ -976,12 +1028,13 @@ export default function AtlasSwapApp() {
                     fontSize: "10px", color: "rgba(240,244,255,0.35)",
                     fontWeight: 700, letterSpacing: "0.1em", marginBottom: "8px",
                   }}>YOU SEND</div>
-                  <div className="input-wrap" style={{
+                  <div className="input-wrap swap-container" style={{
                     display: "flex", alignItems: "center", gap: "10px",
                     background: "rgba(255,255,255,0.05)",
                     border: "1px solid rgba(255,255,255,0.09)",
                     borderRadius: "16px", padding: "13px 14px",
                     transition: "all 0.2s ease",
+                    minWidth: 0,
                   }}>
                     <input
                       type="number" min="0" step="any"
@@ -992,9 +1045,10 @@ export default function AtlasSwapApp() {
                         color: "#fff", fontSize: "24px",
                         fontFamily: "'Syne', sans-serif", fontWeight: 700,
                         letterSpacing: "-0.025em", padding: "2px 4px",
+                        minWidth: 0,
                       }}
                     />
-                    <CoinSelector selected={fromCoin} onChange={setFromCoin} exclude={toCoin} />
+                    <CoinSelector selected={fromCoin} onChange={handleFromCoinChange} exclude={toCoin} tokenList={COINS} />
                   </div>
                   <div style={{
                     fontSize: "11px", color: "rgba(240,244,255,0.3)",
@@ -1063,7 +1117,7 @@ export default function AtlasSwapApp() {
                     }}>
                       {receiveAmt || "0.000000"}
                     </div>
-                    <CoinSelector selected={toCoin} onChange={setToCoin} exclude={fromCoin} />
+                    <CoinSelector selected={toCoin} onChange={handleToCoinChange} exclude={fromCoin} tokenList={COINS} />
                   </div>
                   <div style={{
                     fontSize: "11px", color: "rgba(240,244,255,0.3)",
