@@ -17,9 +17,9 @@ export const metadata: Metadata = {
   title: "AtlasSwap — The World's Atlas of Crypto Swapping",
   description:
     "AtlasSwap aggregates ChangeNOW, SimpleSwap and Swapzone in real time — routing every swap to the best available rate. Zero custody. No registration. Instant.",
+  // Renders: <meta name="google-site-verification" content="…" /> in <head>
   verification: {
-    // Replace this with the value from Google Search Console.
-    google: "YOUR_CODE_HERE",
+    google: "x8FdtnoSlpktJ6y7IXmbo8Vp4GdedYWcbzTmSGtJ95I",
   },
 };
 
