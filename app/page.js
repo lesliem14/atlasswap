@@ -1,5 +1,1 @@
-import AtlasSwapApp from "./components/AtlasSwapApp";
-
-export default function Home() {
-  return <AtlasSwapApp />;
-}
+export { default } from "../atlasswap-page-v11 (1).jsx";
