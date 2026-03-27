@@ -348,11 +348,22 @@ export async function POST(request) {
       ? parseFloat((rawMin * 1.1).toPrecision(4))
       : 0;
 
+    const comparison = allQuotes.map((q) => ({
+      provider: q.provider,
+      rate: q.amountOut,
+      rawRate: q.rate,
+      simulated: q.simulated,
+      available: q.available !== false,
+      quotaId: q.quotaId || "",
+    }));
+
     return Response.json({
-      quotes:     allQuotes,
-      best:       best || null,
+      ok: true,
+      quotes: allQuotes,
+      comparison,
+      best: best || null,
       minAmount,
-      timestamp:  Date.now(),
+      timestamp: Date.now(),
     });
 
   } catch (err) {

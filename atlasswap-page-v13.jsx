@@ -10,7 +10,7 @@ const COINS = [
   // ── Tier 1: Top 10 by volume ──────────────────────────────
   { symbol: "BTC",   name: "Bitcoin",          color: "#F7931A", bg: "#1a0f00", icon: "₿"  },
   { symbol: "ETH",   name: "Ethereum",         color: "#7B9EF0", bg: "#0a0f20", icon: "Ξ"  },
-  { symbol: "USDT",  name: "Tether",           color: "#26A17B", bg: "#001a13", icon: "₮"  },
+  { symbol: "USDT",  name: "Tether",           color: "#26A17B", bg: "#001a13", icon: "T"  },
   { symbol: "BNB",   name: "BNB",              color: "#F3BA2F", bg: "#1a1200", icon: "◈"  },
   { symbol: "SOL",   name: "Solana",           color: "#9945FF", bg: "#0f0020", icon: "◎"  },
   { symbol: "USDC",  name: "USD Coin",         color: "#2775CA", bg: "#001020", icon: "©"  },
@@ -180,6 +180,15 @@ const REFRESH_INTERVAL = 15000;      // 15s auto-refresh
 const DEBOUNCE_MS      = 400;        // debounce user input
 const MAX_RETRIES      = 1;          // retries handled server-side
 
+function fetchWithTimeout(url, init = {}, ms = 20000) {
+  if (typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function") {
+    return fetch(url, { ...init, signal: AbortSignal.timeout(ms) });
+  }
+  const ctrl = new AbortController();
+  const id = setTimeout(() => ctrl.abort(), ms);
+  return fetch(url, { ...init, signal: ctrl.signal }).finally(() => clearTimeout(id));
+}
+
 // ── Cache helpers ─────────────────────────────────────────────
 function getCacheKey(from, to, amount) {
   return `${from}_${to}_${parseFloat(amount).toFixed(8)}`;
@@ -214,11 +223,10 @@ async function fetchBestRate(from, to, amount) {
   const cached = getCached(from, to, parsed);
   if (cached) return { ...cached, fromCache: true };
 
-  const res = await fetch(`${API_BASE}/rate`, {
+  const res = await fetchWithTimeout(`${API_BASE}/rate`, {
     method:  "POST",
     headers: { "Content-Type": "application/json" },
     body:    JSON.stringify({ from, to, amount: parsed }),
-    signal:  AbortSignal.timeout(20000),
   });
 
   if (!res.ok) {
@@ -226,13 +234,47 @@ async function fetchBestRate(from, to, amount) {
     throw new Error(err?.error || `Rate API ${res.status}`);
   }
 
-  const { quotes, best, minAmount } = await res.json();
+  const payload = await res.json();
+  const rawQuotes = Array.isArray(payload?.quotes)
+    ? payload.quotes
+    : Array.isArray(payload?.comparison)
+      ? payload.comparison.map((q) => {
+          const amountOut = Number(q.amountOut ?? q.rate ?? 0);
+          const ratePerUnit =
+            Number(q.rawRate) ||
+            (parsed > 0 && amountOut ? amountOut / parsed : 0);
+          return {
+            provider: q.provider,
+            fromToken: from,
+            toToken: to,
+            amountIn: parsed,
+            amountOut,
+            rate: ratePerUnit,
+            estimatedTime: "",
+            fees: 0.4,
+            minAmount: Number(payload?.minAmount || 0),
+            quotaId: q.quotaId || "",
+            simulated: !!q.simulated,
+            available: q.available !== false,
+            error: q.error || null,
+          };
+        })
+      : [];
+
+  const liveSorted = [...rawQuotes]
+    .filter((q) => q && !q.simulated && Number(q.amountOut) > 0)
+    .sort((a, b) => Number(b.amountOut) - Number(a.amountOut));
+
+  let best = payload?.best && Number(payload.best.amountOut) > 0 ? payload.best : null;
+  if (!best || best.simulated) {
+    best = liveSorted[0] || rawQuotes.find((q) => q && Number(q.amountOut) > 0) || null;
+  }
 
   const result = {
-    best:      best || quotes?.[0] || null,
-    quotes:    quotes?.filter(q => !q.simulated && q.amountOut > 0) || [],
-    allQuotes: quotes || [],
-    minAmount: minAmount || 0,
+    best,
+    quotes: liveSorted,
+    allQuotes: rawQuotes,
+    minAmount: Number(payload?.minAmount || 0),
     fromCache: false,
   };
 
@@ -247,7 +289,7 @@ async function fetchBestRate(from, to, amount) {
 async function createExchange(provider, from, to, amount, destAddress, extraData = {}) {
   if (!destAddress?.trim()) throw new Error("No destination address provided");
 
-  const res = await fetch(`${API_BASE}/create`, {
+  const res = await fetchWithTimeout(`${API_BASE}/create`, {
     method:  "POST",
     headers: { "Content-Type": "application/json" },
     body:    JSON.stringify({
@@ -258,8 +300,7 @@ async function createExchange(provider, from, to, amount, destAddress, extraData
       address: destAddress.trim(),
       quotaId: extraData.quotaId || "",
     }),
-    signal: AbortSignal.timeout(30000),
-  });
+  }, 30000);
 
   const data = await res.json();
 
@@ -284,12 +325,11 @@ async function fetchLivePriceViaServer(symbol) {
   // Stablecoins are always $1
   if (["USDT","USDC","DAI","BUSD","TUSD"].includes(symbol)) return 1;
   try {
-    const res = await fetch(`${API_BASE}/rate`, {
+    const res = await fetchWithTimeout(`${API_BASE}/rate`, {
       method:  "POST",
       headers: { "Content-Type": "application/json" },
       body:    JSON.stringify({ from: symbol, to: "USDT", amount: 1 }),
-      signal:  AbortSignal.timeout(6000),
-    });
+    }, 6000);
     if (!res.ok) return null;
     const { best } = await res.json();
     const price = best?.amountOut || 0;
@@ -952,9 +992,13 @@ export default function AtlasSwapApp() {
     try {
       const { best, quotes, allQuotes, minAmount: min, fromCache } = await fetchBestRate(from, to, parsed);
 
+      if (!best || Number(best.amountOut) <= 0 || Number.isNaN(Number(best.amountOut))) {
+        throw new Error("No live quote");
+      }
+
       // Update YOU GET display
-      setReceiveAmt(best.amountOut.toFixed(6));
-      setBestProvider(best.provider);
+      setReceiveAmt(Number(best.amountOut).toFixed(6));
+      setBestProvider(best.provider || "Swapzone");
       setAllProviderQuotes(allQuotes || quotes || []);
       setServedFromCache(fromCache);
 
@@ -1707,13 +1751,15 @@ export default function AtlasSwapApp() {
                       {/* Live pulse dot */}
                       <span style={{
                         width: 6, height: 6, borderRadius: "50%",
-                        background: rateLoading ? "#F7931A" : servedFromCache ? "#7B9EF0" : "#00E5A0",
+                        background: fetchError ? "#F7931A" : rateLoading ? "#F7931A" : servedFromCache ? "#7B9EF0" : "#00E5A0",
                         display: "inline-block",
                         animation: rateLoading ? "spin 0.8s linear infinite" : "none",
                         transition: "background 0.3s",
                       }}/>
-                      <span style={{ color: rateLoading ? "#F7931A" : servedFromCache ? "#7B9EF0" : "rgba(0,229,160,0.7)" }}>
-                        {rateLoading ? "Fetching live rates…" : servedFromCache ? `Cached · ${bestProvider}` : `Live · Best via ${bestProvider}`}
+                      <span style={{ color: fetchError ? "#F7931A" : rateLoading ? "#F7931A" : servedFromCache ? "#7B9EF0" : "rgba(0,229,160,0.7)" }}>
+                        {fetchError
+                          ? "Estimated rate · could not reach live APIs"
+                          : rateLoading ? "Fetching live rates…" : servedFromCache ? `Cached · ${bestProvider}` : `Live · Best via ${bestProvider}`}
                       </span>
                       {lastRefreshed && !rateLoading && (
                         <span style={{ fontSize: "10px", color: "rgba(240,244,255,0.2)" }}>
@@ -1913,7 +1959,9 @@ export default function AtlasSwapApp() {
                     color: isBelowMin
                       ? "#FF5A72"
                       : destAddr.trim() && !rateLoading ? "#070B14" : "rgba(240,244,255,0.2)",
-                    fontFamily: "'Syne', sans-serif", fontWeight: 800, fontSize: "15px",
+                    fontFamily: "'Outfit', 'Syne', system-ui, sans-serif",
+                    fontWeight: 800,
+                    fontSize: "15px",
                     cursor: destAddr.trim() && !rateLoading && !isBelowMin ? "pointer" : "not-allowed",
                     letterSpacing: "0.05em",
                     boxShadow: destAddr.trim() && !rateLoading && !isBelowMin
