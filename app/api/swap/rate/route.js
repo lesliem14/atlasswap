@@ -120,10 +120,25 @@ async function fetchChangeNowRate(from, to, amount) {
       minAmount,
       available: true,
       simulated: false,
+      diagnostics: { status: "ok", httpStatus: 200 },
     };
-  } catch {
+  } catch (err) {
+    const m = String(err?.message || "");
+    const statusMatch = m.match(/(\d{3})/);
+    const httpStatus = statusMatch ? Number(statusMatch[1]) : 0;
     const rate = fallbackRate(from, to, amount, 0.996);
-    return { provider: "ChangeNOW", rate, rawRate: rate / amount, available: true, simulated: true };
+    return {
+      provider: "ChangeNOW",
+      rate,
+      rawRate: rate / amount,
+      available: true,
+      simulated: true,
+      diagnostics: {
+        status: "fallback",
+        httpStatus,
+        reason: m || "unknown_error",
+      },
+    };
   }
 }
 
@@ -141,10 +156,31 @@ async function fetchSimpleSwapRate(from, to, amount) {
     const data = await res.json();
     const estimated = parseFloat(data?.result?.amountTo ?? data?.result ?? 0);
     if (!estimated || Number.isNaN(estimated)) throw new Error("No SS amount");
-    return { provider: "SimpleSwap", rate: estimated, rawRate: estimated / amount, available: true, simulated: false };
-  } catch {
+    return {
+      provider: "SimpleSwap",
+      rate: estimated,
+      rawRate: estimated / amount,
+      available: true,
+      simulated: false,
+      diagnostics: { status: "ok", httpStatus: 200 },
+    };
+  } catch (err) {
+    const m = String(err?.message || "");
+    const statusMatch = m.match(/(\d{3})/);
+    const httpStatus = statusMatch ? Number(statusMatch[1]) : 0;
     const rate = fallbackRate(from, to, amount, 0.992);
-    return { provider: "SimpleSwap", rate, rawRate: rate / amount, available: true, simulated: true };
+    return {
+      provider: "SimpleSwap",
+      rate,
+      rawRate: rate / amount,
+      available: true,
+      simulated: true,
+      diagnostics: {
+        status: "fallback",
+        httpStatus,
+        reason: m || "unknown_error",
+      },
+    };
   }
 }
 
@@ -165,10 +201,25 @@ async function fetchSwapzoneRate(from, to, amount) {
       adapter: data?.adapter || "",
       available: true,
       simulated: false,
+      diagnostics: { status: "ok", httpStatus: 200 },
     };
-  } catch {
+  } catch (err) {
+    const m = String(err?.message || "");
+    const statusMatch = m.match(/(\d{3})/);
+    const httpStatus = statusMatch ? Number(statusMatch[1]) : 0;
     const rate = fallbackRate(from, to, amount, 0.989);
-    return { provider: "Swapzone", rate, rawRate: rate / amount, available: true, simulated: true };
+    return {
+      provider: "Swapzone",
+      rate,
+      rawRate: rate / amount,
+      available: true,
+      simulated: true,
+      diagnostics: {
+        status: "fallback",
+        httpStatus,
+        reason: m || "unknown_error",
+      },
+    };
   }
 }
 
@@ -208,7 +259,10 @@ export async function POST(req) {
       simulated: true,
     };
 
-    return NextResponse.json({ ok: true, best, comparison, minAmount }, { status: 200 });
+    const diagnostics = Object.fromEntries(
+      comparison.map((q) => [q.provider, q.diagnostics || null])
+    );
+    return NextResponse.json({ ok: true, best, comparison, minAmount, diagnostics }, { status: 200 });
   } catch {
     return NextResponse.json({ ok: false, error: "Failed to fetch rates" }, { status: 500 });
   }
