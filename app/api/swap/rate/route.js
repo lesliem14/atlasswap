@@ -57,6 +57,19 @@ const SS_NETWORKS = {
   KSM:"ksm",    ZEN:"zen",      DCR:"dcr",     RVN:"rvn",     DGB:"dgb",
 };
 
+// ChangeNOW network hints. For multi-chain tokens (USDT/USDC/etc),
+// we try several common networks because provider-side defaults vary by pair.
+const CN_NETWORKS = {
+  BTC: ["btc"], ETH: ["eth"], BNB: ["bsc"], SOL: ["sol"], XRP: ["xrp"], TRX: ["trx"],
+  MATIC: ["matic"], AVAX: ["avaxc", "avax"], LTC: ["ltc"], BCH: ["bch"], DOGE: ["doge"],
+  ADA: ["ada"], XLM: ["xlm"], DOT: ["dot"], ATOM: ["atom"], NEAR: ["near"], TON: ["ton"],
+  USDT: ["trx", "eth", "bsc", "sol", "matic"],
+  USDC: ["eth", "bsc", "sol", "matic", "avaxc"],
+  DAI: ["eth", "bsc", "matic"],
+  BUSD: ["bsc", "eth"],
+  TUSD: ["eth", "bsc"],
+};
+
 // ── Normalised quote shape returned to the browser ─────────────
 // {
 //   provider: string,
@@ -80,39 +93,65 @@ async function rateChangeNow(from, to, amount) {
   if (!CN_KEY) return { provider: "ChangeNOW", error: "No API key configured", simulated: true };
 
   try {
-    const [rateRes, minRes] = await Promise.all([
-      fetch(
-        `${CN_V2}/exchange/estimated-amount?fromCurrency=${from.toLowerCase()}&toCurrency=${to.toLowerCase()}&fromAmount=${amount}&flow=standard&type=direct`,
-        { headers: { "x-changenow-api-key": CN_KEY }, signal: AbortSignal.timeout(8000) }
-      ),
-      fetch(
-        `${CN_V1}/min-amount/${from.toLowerCase()}_${to.toLowerCase()}?api_key=${CN_KEY}`,
-        { signal: AbortSignal.timeout(5000) }
-      ),
-    ]);
+    const fromCoin = String(from || "").toUpperCase();
+    const toCoin = String(to || "").toUpperCase();
+    const fromNetworks = CN_NETWORKS[fromCoin] || [fromCoin.toLowerCase()];
+    const toNetworks = CN_NETWORKS[toCoin] || [toCoin.toLowerCase()];
+    const networkPairs = [];
+    toNetworks.forEach((tn) => networkPairs.push({ fromNetwork: undefined, toNetwork: tn }));
+    fromNetworks.forEach((fn) => networkPairs.push({ fromNetwork: fn, toNetwork: undefined }));
+    fromNetworks.forEach((fn) => {
+      toNetworks.forEach((tn) => networkPairs.push({ fromNetwork: fn, toNetwork: tn }));
+    });
+    networkPairs.push({ fromNetwork: undefined, toNetwork: undefined });
 
-    if (!rateRes.ok) {
-      const body = await rateRes.text();
-      // ChangeNOW V2 sometimes rejects — try V1 fallback
+    let amountOut = 0;
+    let lastErr = "";
+    for (const pair of networkPairs) {
+      const qs = new URLSearchParams({
+        fromCurrency: from.toLowerCase(),
+        toCurrency: to.toLowerCase(),
+        fromAmount: String(amount),
+        flow: "standard",
+        type: "direct",
+      });
+      if (pair.fromNetwork) qs.set("fromNetwork", pair.fromNetwork);
+      if (pair.toNetwork) qs.set("toNetwork", pair.toNetwork);
+
+      const rateRes = await fetch(
+        `${CN_V2}/exchange/estimated-amount?${qs.toString()}`,
+        { headers: { "x-changenow-api-key": CN_KEY }, signal: AbortSignal.timeout(8000) }
+      );
+      if (!rateRes.ok) {
+        const body = await rateRes.text().catch(() => "");
+        lastErr = `CN HTTP ${rateRes.status}: ${body}`;
+        continue;
+      }
+      const rateData = await rateRes.json().catch(() => ({}));
+      const parsedOut = parseFloat(rateData?.toAmount || rateData?.estimatedAmount || 0);
+      if (parsedOut && !isNaN(parsedOut)) {
+        amountOut = parsedOut;
+        break;
+      }
+      lastErr = "CN: empty amount";
+    }
+
+    if (!amountOut || isNaN(amountOut)) {
+      // Final fallback: V1 endpoint
       const v1Res = await fetch(
         `${CN_V1}/exchange-amount/${amount}/${from.toLowerCase()}_${to.toLowerCase()}?api_key=${CN_KEY}`,
         { signal: AbortSignal.timeout(8000) }
       );
-      if (!v1Res.ok) throw new Error(`CN HTTP ${rateRes.status}: ${body}`);
-      const v1Data = await v1Res.json();
-      const amountOut = parseFloat(v1Data?.estimatedAmount || 0);
-      if (!amountOut) throw new Error("CN V1: no amount");
-      return {
-        provider: "ChangeNOW", fromToken: from, toToken: to,
-        amountIn: amount, amountOut, rate: amountOut / amount,
-        estimatedTime: "2–5 min", fees: 0.4, minAmount: 0,
-        quotaId: "", simulated: false, error: null,
-      };
+      if (!v1Res.ok) throw new Error(lastErr || `CN V1 HTTP ${v1Res.status}`);
+      const v1Data = await v1Res.json().catch(() => ({}));
+      amountOut = parseFloat(v1Data?.estimatedAmount || v1Data?.toAmount || 0);
+      if (!amountOut || isNaN(amountOut)) throw new Error(lastErr || "CN V1: no amount");
     }
 
-    const rateData = await rateRes.json();
-    const amountOut = parseFloat(rateData?.toAmount || rateData?.estimatedAmount || 0);
-    if (!amountOut || isNaN(amountOut)) throw new Error("CN: empty amount");
+    const minRes = await fetch(
+      `${CN_V1}/min-amount/${from.toLowerCase()}_${to.toLowerCase()}?api_key=${CN_KEY}`,
+      { signal: AbortSignal.timeout(5000) }
+    );
 
     let minAmount = 0;
     if (minRes.ok) {
@@ -144,28 +183,67 @@ async function rateSimpleSwap(from, to, amount) {
   if (!SS_KEY) return { provider: "SimpleSwap", error: "No API key configured", simulated: true };
 
   const netFrom = SS_NETWORKS[from.toUpperCase()] || from.toLowerCase();
-  const netTo   = SS_NETWORKS[to.toUpperCase()]   || to.toLowerCase();
+  const netToDefault = SS_NETWORKS[to.toUpperCase()] || to.toLowerCase();
 
   try {
-    const res = await fetch(
-      `${SS_V3}/estimates?tickerFrom=${from.toLowerCase()}&networkFrom=${netFrom}&tickerTo=${to.toLowerCase()}&networkTo=${netTo}&amount=${amount}&fixed=false`,
-      {
+    const parseAmount = (data) => parseFloat(
+      data?.result?.amountTo ??
+      data?.result?.expectedAmount ??
+      data?.result?.toAmount ??
+      data?.result ??
+      data?.amountTo ??
+      data?.toAmount ??
+      data?.expectedAmount ??
+      data?.estimatedAmount ??
+      0
+    );
+
+    const requestEstimate = async (networkTo) => {
+      const qs = new URLSearchParams({
+        tickerFrom: from.toLowerCase(),
+        networkFrom: netFrom,
+        tickerTo: to.toLowerCase(),
+        amount: String(amount),
+        fixed: "false",
+      });
+      if (networkTo) qs.set("networkTo", networkTo);
+
+      const res = await fetch(`${SS_V3}/estimates?${qs.toString()}`, {
         headers: { "x-api-key": SS_KEY, "Accept": "application/json" },
         signal: AbortSignal.timeout(8000),
+      });
+      if (!res.ok) {
+        const body = await res.text().catch(() => "");
+        return { ok: false, amount: 0, err: `SS HTTP ${res.status}: ${body}` };
       }
-    );
+      const data = await res.json().catch(() => ({}));
+      const parsed = parseAmount(data);
+      return { ok: true, amount: parsed, err: "" };
+    };
 
-    if (!res.ok) {
-      const body = await res.text();
-      throw new Error(`SS HTTP ${res.status}: ${body}`);
+    const networkCandidates = [
+      netToDefault, netFrom, "eth", "bsc", "trx", "sol", "matic", "arbitrum", "optimism",
+    ].filter((v, i, arr) => v && arr.indexOf(v) === i);
+
+    let amountOut = 0;
+    let lastErr = "";
+    for (const networkTo of networkCandidates) {
+      const out = await requestEstimate(networkTo);
+      if (out.ok && out.amount && !isNaN(out.amount)) {
+        amountOut = out.amount;
+        break;
+      }
+      lastErr = out.err || "SS: empty amount";
     }
 
-    const data = await res.json();
-    // V3 may return: { result: { amountTo } } or { result: "0.123" }
-    const amountOut = parseFloat(
-      data?.result?.amountTo ?? data?.result ?? data?.amountTo ?? 0
-    );
-    if (!amountOut || isNaN(amountOut)) throw new Error("SS: empty amount");
+    if (!amountOut || isNaN(amountOut)) {
+      // Final fallback without explicit networkTo
+      const out = await requestEstimate("");
+      if (out.ok && out.amount && !isNaN(out.amount)) amountOut = out.amount;
+      else lastErr = out.err || lastErr || "SS: empty amount";
+    }
+
+    if (!amountOut || isNaN(amountOut)) throw new Error(lastErr || "SS: empty amount");
 
     return {
       provider: "SimpleSwap", fromToken: from, toToken: to,
