@@ -26,9 +26,27 @@ const BASE_RATES = {
 
 // Support both server-only and legacy NEXT_PUBLIC env var names.
 // Using these on the server does not expose them to the client bundle.
-const CN_KEY = process.env.CHANGENOW_API_KEY || process.env.NEXT_PUBLIC_CHANGENOW_API_KEY || "";
-const SS_KEY = process.env.SIMPLESWAP_API_KEY || process.env.NEXT_PUBLIC_SIMPLESWAP_API_KEY || "";
-const SZ_KEY = process.env.SWAPZONE_API_KEY || process.env.NEXT_PUBLIC_SWAPZONE_API_KEY || "";
+const CN_KEY =
+  process.env.CHANGENOW_API_KEY ||
+  process.env.NEXT_PUBLIC_CHANGENOW_API_KEY ||
+  process.env.NEXT_PUBLIC_CHANGENOW_KEY ||
+  process.env.NEXT_PUBLIC_CN_API_KEY ||
+  process.env.NEXT_PUBLIC_CN_KEY ||
+  "";
+const SS_KEY =
+  process.env.SIMPLESWAP_API_KEY ||
+  process.env.NEXT_PUBLIC_SIMPLESWAP_API_KEY ||
+  process.env.NEXT_PUBLIC_SIMPLESWAP_KEY ||
+  process.env.NEXT_PUBLIC_SS_API_KEY ||
+  process.env.NEXT_PUBLIC_SS_KEY ||
+  "";
+const SZ_KEY =
+  process.env.SWAPZONE_API_KEY ||
+  process.env.NEXT_PUBLIC_SWAPZONE_API_KEY ||
+  process.env.NEXT_PUBLIC_SWAPZONE_KEY ||
+  process.env.NEXT_PUBLIC_SZ_API_KEY ||
+  process.env.NEXT_PUBLIC_SZ_KEY ||
+  "";
 
 const CN_V1 = "https://api.changenow.io/v1";
 const CN_V2 = "https://api.changenow.io/v2";

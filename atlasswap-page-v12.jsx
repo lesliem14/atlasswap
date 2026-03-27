@@ -705,48 +705,54 @@ async function fetchBestRate(from, to, amount) {
   const cached = getCached(from, to, parsed);
   if (cached) return { ...cached, fromCache: true };
 
-  // Parallel fetch from all 3 providers — one failing does not block others
-  const [cn, ss, sz] = await Promise.allSettled([
-    fetchChangeNowRate(from, to, parsed),
-    fetchSimpleSwapRate(from, to, parsed),
-    fetchSwapzoneRate(from, to, parsed),
-  ]);
+  // Server-side aggregator avoids browser-side API/CORS/provider key issues.
+  const res = await fetch("/api/swap/rate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ from, to, amount: parsed }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data?.ok) throw new Error(data?.error || "Rate fetch failed");
 
-  // Collect all results regardless of status
-  const allQuotes = [cn, ss, sz].map(r =>
-    r.status === "fulfilled" ? r.value : null
-  ).filter(Boolean);
+  const minAmount = Number(data?.minAmount || 0);
+  const comparison = Array.isArray(data?.comparison) ? data.comparison : [];
+  const quotes = comparison
+    .map((q) => ({
+      provider: q.provider,
+      fromToken: from,
+      toToken: to,
+      amountIn: parsed,
+      amountOut: Number(q.rate || 0),
+      rate: Number(q.rawRate || 0),
+      estimatedTime: q.provider === "ChangeNOW" ? "2-5 min" : q.provider === "SimpleSwap" ? "5-20 min" : "5-30 min",
+      fees: 0.4,
+      minAmount,
+      quotaId: q.quotaId || "",
+      simulated: !!q.simulated,
+      available: !!q.available,
+      error: null,
+    }))
+    .filter((q) => q.amountOut > 0);
 
-  // Live quotes only (not simulated fallbacks) — for sorting by rate
-  const liveQuotes  = allQuotes.filter(q => !q.simulated && q.amountOut > 0);
-  const allValid    = allQuotes.filter(q => q.amountOut > 0);
-
-  // Sort best amountOut first
-  const sorted = [...(liveQuotes.length ? liveQuotes : allValid)]
-    .sort((a, b) => b.amountOut - a.amountOut);
-
-  // Real minimum from ChangeNOW with 10% buffer
-  const cnQuote  = cn.status === "fulfilled" ? cn.value : null;
-  const rawMin   = cnQuote?.minAmount || 0;
-  const minAmount = rawMin > 0
-    ? parseFloat((rawMin * 1.1).toPrecision(4))
-    : parseFloat((2 / (BASE_RATES[from] || 1)).toPrecision(4));
-
-  // Best quote — highest real output, or simulated fallback
-  const best = sorted[0] || {
-    provider: "ChangeNOW", fromToken: from, toToken: to,
+  const bestQuote = data?.best || {};
+  const best = {
+    provider: bestQuote.provider || "ChangeNOW",
+    fromToken: from,
+    toToken: to,
     amountIn: parsed,
-    amountOut: ((parsed * (BASE_RATES[from] || 1)) / (BASE_RATES[to] || 1)) * 0.996,
-    rate: ((BASE_RATES[from] || 1) / (BASE_RATES[to] || 1)) * 0.996,
-    estimatedTime: "~5 min", fees: 0.4,
-    minAmount, quotaId: "", simulated: true, available: true, error: "All providers unavailable",
+    amountOut: Number(bestQuote.rate || 0),
+    rate: Number(bestQuote.rawRate || 0),
+    estimatedTime: bestQuote.provider === "ChangeNOW" ? "2-5 min" : bestQuote.provider === "SimpleSwap" ? "5-20 min" : "5-30 min",
+    fees: 0.4,
+    minAmount,
+    quotaId: bestQuote.quotaId || "",
+    simulated: !!bestQuote.simulated,
+    available: bestQuote.available !== false,
+    error: null,
   };
 
-  const result = { best, quotes: sorted, allQuotes, minAmount, fromCache: false };
-
-  // Cache for CACHE_TTL ms to prevent duplicate calls
+  const result = { best, quotes, allQuotes: quotes, minAmount, fromCache: false };
   setCache(from, to, parsed, result);
-
   return result;
 }
 
@@ -846,19 +852,16 @@ async function createExchangeSwapzone(from, to, amount, destAddress, quotaId) {
 // CREATE EXCHANGE — tries winning provider, falls back to others
 // ─────────────────────────────────────────────────────────────
 async function createExchange(provider, from, to, amount, destAddress, extraData = {}) {
-  const order = [provider, ...["ChangeNOW", "SimpleSwap", "Swapzone"].filter(p => p !== provider)];
-  let lastErr = null;
-  for (const p of order) {
-    try {
-      if (p === "ChangeNOW")  return await createExchangeChangeNow(from, to, amount, destAddress);
-      if (p === "SimpleSwap") return await createExchangeSimpleSwap(from, to, amount, destAddress);
-      if (p === "Swapzone")   return await createExchangeSwapzone(from, to, amount, destAddress, extraData.quotaId);
-    } catch (e) {
-      lastErr = e;
-      console.warn(`${p} create failed: ${e.message} — trying next provider`);
-    }
+  const res = await fetch("/api/swap/create", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ provider, from, to, amount, destAddress, extraData }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data?.ok || !data?.result) {
+    throw new Error(data?.error || "All providers failed");
   }
-  throw lastErr || new Error("All providers failed");
+  return data.result;
 }
 
 // ─────────────────────────────────────────────────────────────
