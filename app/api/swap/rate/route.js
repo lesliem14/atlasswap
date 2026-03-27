@@ -182,7 +182,7 @@ async function rateChangeNow(from, to, amount) {
 async function rateSimpleSwap(from, to, amount) {
   if (!SS_KEY) return { provider: "SimpleSwap", error: "No API key configured", simulated: true };
 
-  const netFrom = SS_NETWORKS[from.toUpperCase()] || from.toLowerCase();
+  const netFromDefault = SS_NETWORKS[from.toUpperCase()] || from.toLowerCase();
   const netToDefault = SS_NETWORKS[to.toUpperCase()] || to.toLowerCase();
 
   try {
@@ -198,15 +198,15 @@ async function rateSimpleSwap(from, to, amount) {
       0
     );
 
-    const requestEstimate = async (networkTo) => {
+    const requestEstimate = async (networkFrom, networkTo) => {
       const qs = new URLSearchParams({
         tickerFrom: from.toLowerCase(),
-        networkFrom: netFrom,
+        networkFrom: networkFrom,
         tickerTo: to.toLowerCase(),
+        networkTo: networkTo,
         amount: String(amount),
         fixed: "false",
       });
-      if (networkTo) qs.set("networkTo", networkTo);
 
       const res = await fetch(`${SS_V3}/estimates?${qs.toString()}`, {
         headers: { "x-api-key": SS_KEY, "Accept": "application/json" },
@@ -221,26 +221,31 @@ async function rateSimpleSwap(from, to, amount) {
       return { ok: true, amount: parsed, err: "" };
     };
 
-    const networkCandidates = [
-      netToDefault, netFrom, "eth", "bsc", "trx", "sol", "matic", "arbitrum", "optimism",
+    const toNetworkCandidates = [
+      netToDefault,
+      ...(to.toUpperCase() === "USDT" ? ["eth", "trx", "bsc", "sol", "matic", "arbitrum", "optimism"] : []),
+      ...(to.toUpperCase() === "USDC" ? ["eth", "bsc", "sol", "matic", "avax"] : []),
+      "eth", "bsc", "trx", "sol", "matic", "arbitrum", "optimism",
+    ].filter((v, i, arr) => v && arr.indexOf(v) === i);
+    const fromNetworkCandidates = [
+      netFromDefault,
+      ...(from.toUpperCase() === "USDT" ? ["eth", "trx", "bsc", "sol", "matic", "arbitrum", "optimism"] : []),
+      ...(from.toUpperCase() === "USDC" ? ["eth", "bsc", "sol", "matic", "avax"] : []),
+      netToDefault,
     ].filter((v, i, arr) => v && arr.indexOf(v) === i);
 
     let amountOut = 0;
     let lastErr = "";
-    for (const networkTo of networkCandidates) {
-      const out = await requestEstimate(networkTo);
-      if (out.ok && out.amount && !isNaN(out.amount)) {
-        amountOut = out.amount;
-        break;
+    for (const networkFrom of fromNetworkCandidates) {
+      for (const networkTo of toNetworkCandidates) {
+        const out = await requestEstimate(networkFrom, networkTo);
+        if (out.ok && out.amount && !isNaN(out.amount)) {
+          amountOut = out.amount;
+          break;
+        }
+        lastErr = out.err || "SS: empty amount";
       }
-      lastErr = out.err || "SS: empty amount";
-    }
-
-    if (!amountOut || isNaN(amountOut)) {
-      // Final fallback without explicit networkTo
-      const out = await requestEstimate("");
-      if (out.ok && out.amount && !isNaN(out.amount)) amountOut = out.amount;
-      else lastErr = out.err || lastErr || "SS: empty amount";
+      if (amountOut > 0) break;
     }
 
     if (!amountOut || isNaN(amountOut)) throw new Error(lastErr || "SS: empty amount");
