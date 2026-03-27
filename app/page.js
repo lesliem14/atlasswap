@@ -1,1 +1,1 @@
-export { default } from "../atlasswap-page-v11.jsx";
+export { default } from "../atlasswap-page-v12.jsx";
