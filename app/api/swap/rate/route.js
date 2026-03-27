@@ -92,7 +92,7 @@ const fallbackRate = (from, to, amount, discount) =>
 async function fetchChangeNowRate(from, to, amount) {
   try {
     if (!CN_KEY) throw new Error("No CN key");
-    const [rateRes, minRes] = await Promise.all([
+    const [v2RateRes, minRes] = await Promise.all([
       fetchWithTimeout(
         `${CN_V2}/exchange/estimated-amount?fromCurrency=${from.toLowerCase()}&toCurrency=${to.toLowerCase()}&fromAmount=${amount}&flow=standard&type=direct`,
         { headers: { "x-changenow-api-key": CN_KEY }, cache: "no-store" }
@@ -102,9 +102,26 @@ async function fetchChangeNowRate(from, to, amount) {
         { cache: "no-store" }
       ),
     ]);
-    if (!rateRes.ok) throw new Error(`ChangeNOW ${rateRes.status}`);
-    const data = await rateRes.json();
-    const estimated = parseFloat(data?.toAmount || data?.estimatedAmount || 0);
+
+    let estimated = 0;
+    let sourceStatus = v2RateRes.status || 0;
+    if (v2RateRes.ok) {
+      const data = await v2RateRes.json();
+      estimated = parseFloat(data?.toAmount || data?.estimatedAmount || 0);
+    }
+
+    // Some pairs/keys return 400 on V2. Fallback to stable V1 quote endpoint.
+    if (!estimated || Number.isNaN(estimated)) {
+      const v1RateRes = await fetchWithTimeout(
+        `${CN_V1}/exchange-amount/${amount}/${from.toLowerCase()}_${to.toLowerCase()}?api_key=${CN_KEY}`,
+        { cache: "no-store" }
+      );
+      sourceStatus = v1RateRes.status || sourceStatus;
+      if (!v1RateRes.ok) throw new Error(`ChangeNOW ${v1RateRes.status}`);
+      const v1Data = await v1RateRes.json();
+      estimated = parseFloat(v1Data?.estimatedAmount || v1Data?.toAmount || 0);
+    }
+
     if (!estimated || Number.isNaN(estimated)) throw new Error("No CN amount");
 
     let minAmount = 0;
@@ -120,7 +137,7 @@ async function fetchChangeNowRate(from, to, amount) {
       minAmount,
       available: true,
       simulated: false,
-      diagnostics: { status: "ok", httpStatus: 200 },
+      diagnostics: { status: "ok", httpStatus: sourceStatus || 200 },
     };
   } catch (err) {
     const m = String(err?.message || "");
@@ -147,14 +164,43 @@ async function fetchSimpleSwapRate(from, to, amount) {
     if (!SS_KEY) throw new Error("No SS key");
     const netFrom = SS_NETWORKS[from] || from.toLowerCase();
     const netTo = SS_NETWORKS[to] || to.toLowerCase();
-    const url = `${SS_BASE}/estimates?tickerFrom=${from.toLowerCase()}&networkFrom=${netFrom}&tickerTo=${to.toLowerCase()}&networkTo=${netTo}&amount=${amount}&fixed=false`;
-    const res = await fetchWithTimeout(url, {
+    const primaryUrl = `${SS_BASE}/estimates?tickerFrom=${from.toLowerCase()}&networkFrom=${netFrom}&tickerTo=${to.toLowerCase()}&networkTo=${netTo}&amount=${amount}&fixed=false`;
+    const res = await fetchWithTimeout(primaryUrl, {
       headers: { "x-api-key": SS_KEY, Accept: "application/json" },
       cache: "no-store",
     });
     if (!res.ok) throw new Error(`SimpleSwap ${res.status}`);
     const data = await res.json();
-    const estimated = parseFloat(data?.result?.amountTo ?? data?.result ?? 0);
+
+    const parseAmount = (payload) => {
+      const result = payload?.result;
+      if (Array.isArray(result) && result.length > 0) {
+        return parseFloat(result[0]?.amountTo ?? result[0]?.amount ?? 0);
+      }
+      return parseFloat(
+        result?.amountTo ??
+        result?.amount ??
+        payload?.amountTo ??
+        payload?.estimatedAmount ??
+        result ??
+        0
+      );
+    };
+
+    let estimated = parseAmount(data);
+    // Retry without explicit networks if provider returned empty shape.
+    if (!estimated || Number.isNaN(estimated)) {
+      const fallbackUrl = `${SS_BASE}/estimates?tickerFrom=${from.toLowerCase()}&tickerTo=${to.toLowerCase()}&amount=${amount}&fixed=false`;
+      const res2 = await fetchWithTimeout(fallbackUrl, {
+        headers: { "x-api-key": SS_KEY, Accept: "application/json" },
+        cache: "no-store",
+      });
+      if (res2.ok) {
+        const data2 = await res2.json();
+        estimated = parseAmount(data2);
+      }
+    }
+
     if (!estimated || Number.isNaN(estimated)) throw new Error("No SS amount");
     return {
       provider: "SimpleSwap",
