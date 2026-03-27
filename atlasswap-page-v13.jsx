@@ -461,7 +461,6 @@ const ADDRESS_VALIDATORS = {
   ROSE:  a => /^oasis1[a-z0-9]{40}$/.test(a),
   CFX:   a => /^0x[a-fA-F0-9]{40}$|^cfx:[a-z0-9]+$/.test(a),
   ZEN:   a => /^zn[a-zA-Z0-9]{33}$|^t1[a-zA-Z0-9]{33}$/.test(a),
-  VXG:   a => a.length > 20,  // Permissive fallback
   SC:    a => a.length > 20,  // Permissive fallback
   XVG:   a => /^D[a-zA-Z0-9]{33}$/.test(a),
   XEM:   a => /^N[A-Z2-7]{39}$/.test(a),
@@ -1814,7 +1813,7 @@ export default function AtlasSwapApp() {
                               </span>
                               {isBest && (
                                 <span style={{
-                                  fontSize: "9px", fontWeight: 700, color: NAVY || "#070B14",
+                                  fontSize: "9px", fontWeight: 700, color: "#070B14",
                                   background: col, padding: "1px 5px", borderRadius: "4px",
                                   letterSpacing: "0.05em",
                                 }}>BEST</span>
