@@ -163,14 +163,7 @@ async function fetchSimpleSwapRate(from, to, amount) {
   try {
     if (!SS_KEY) throw new Error("No SS key");
     const netFrom = SS_NETWORKS[from] || from.toLowerCase();
-    const netTo = SS_NETWORKS[to] || to.toLowerCase();
-    const primaryUrl = `${SS_BASE}/estimates?tickerFrom=${from.toLowerCase()}&networkFrom=${netFrom}&tickerTo=${to.toLowerCase()}&networkTo=${netTo}&amount=${amount}&fixed=false`;
-    const res = await fetchWithTimeout(primaryUrl, {
-      headers: { "x-api-key": SS_KEY, Accept: "application/json" },
-      cache: "no-store",
-    });
-    if (!res.ok) throw new Error(`SimpleSwap ${res.status}`);
-    const data = await res.json();
+    const netToDefault = SS_NETWORKS[to] || to.toLowerCase();
 
     const parseAmount = (payload) => {
       const result = payload?.result;
@@ -187,8 +180,41 @@ async function fetchSimpleSwapRate(from, to, amount) {
       );
     };
 
-    let estimated = parseAmount(data);
-    // Retry without explicit networks if provider returned empty shape.
+    const requestEstimate = async (networkTo) => {
+      const url = `${SS_BASE}/estimates?tickerFrom=${from.toLowerCase()}&networkFrom=${netFrom}&tickerTo=${to.toLowerCase()}&networkTo=${networkTo}&amount=${amount}&fixed=false`;
+      const res = await fetchWithTimeout(url, {
+        headers: { "x-api-key": SS_KEY, Accept: "application/json" },
+        cache: "no-store",
+      });
+      if (!res.ok) return { ok: false, status: res.status, amount: 0 };
+      const data = await res.json();
+      const parsed = parseAmount(data);
+      return { ok: true, status: res.status, amount: parsed };
+    };
+
+    // Try preferred network first, then alt routes commonly needed for stables.
+    const candidateNetworks = [
+      netToDefault,
+      // For USDT/USDC/etc, matching source network often resolves "No amount" responses.
+      netFrom,
+      "eth",
+      "bsc",
+      "trx",
+      "sol",
+    ].filter((v, i, arr) => v && arr.indexOf(v) === i);
+
+    let estimated = 0;
+    let lastStatus = 0;
+    for (const networkTo of candidateNetworks) {
+      const out = await requestEstimate(networkTo);
+      if (out.status) lastStatus = out.status;
+      if (out.ok && out.amount && !Number.isNaN(out.amount)) {
+        estimated = out.amount;
+        break;
+      }
+    }
+
+    // Final retry without explicit networks if all network-pinned attempts fail.
     if (!estimated || Number.isNaN(estimated)) {
       const fallbackUrl = `${SS_BASE}/estimates?tickerFrom=${from.toLowerCase()}&tickerTo=${to.toLowerCase()}&amount=${amount}&fixed=false`;
       const res2 = await fetchWithTimeout(fallbackUrl, {
@@ -196,8 +222,11 @@ async function fetchSimpleSwapRate(from, to, amount) {
         cache: "no-store",
       });
       if (res2.ok) {
+        lastStatus = res2.status;
         const data2 = await res2.json();
         estimated = parseAmount(data2);
+      } else {
+        lastStatus = res2.status;
       }
     }
 
@@ -208,7 +237,7 @@ async function fetchSimpleSwapRate(from, to, amount) {
       rawRate: estimated / amount,
       available: true,
       simulated: false,
-      diagnostics: { status: "ok", httpStatus: 200 },
+      diagnostics: { status: "ok", httpStatus: lastStatus || 200 },
     };
   } catch (err) {
     const m = String(err?.message || "");
