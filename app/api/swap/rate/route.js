@@ -1,128 +1,118 @@
-import { NextResponse } from "next/server";
+// ═══════════════════════════════════════════════════════════════
+// FILE: atlasswap/app/api/swap/rate/route.js
+//
+// PURPOSE: Server-side rate aggregation proxy.
+//   - Browser calls POST /api/swap/rate (your own server)
+//   - Your server calls ChangeNOW, SimpleSwap, Swapzone
+//   - API keys NEVER reach the browser
+//   - Solves: SimpleSwap 401, ChangeNOW 400, CORS errors
+//
+// SECURITY:
+//   - Keys stored as plain env vars (no NEXT_PUBLIC_ prefix)
+//   - Keys only accessible server-side
+//   - Request validated before forwarding
+//
+// VERCEL ENV VARS NEEDED (no NEXT_PUBLIC_ prefix):
+//   CHANGENOW_API_KEY
+//   SIMPLESWAP_API_KEY
+//   SWAPZONE_API_KEY
+// ═══════════════════════════════════════════════════════════════
 
-const BASE_RATES = {
-  BTC:87500, ETH:3350, USDT:1, BNB:590, SOL:178,
-  USDC:1, XRP:0.61, DOGE:0.13, ADA:0.47, TRX:0.13,
-  AVAX:37, TON:5.8, DOT:7.2, MATIC:0.58, LTC:92,
-  BCH:480, ATOM:8.2, NEAR:4.5, FTM:0.85, ALGO:0.19,
-  XLM:0.12, VET:0.038, HBAR:0.085, ICP:11, APT:8.9,
-  SUI:1.4, SEI:0.42, STX:1.8, EGLD:28, FIL:5.2,
-  UNI:9.5, LINK:15, AAVE:185, CRV:0.38, MKR:1800,
-  SNX:2.1, COMP:52, LDO:1.8, CAKE:2.4, "1INCH":0.38,
-  ARB:1.12, OP:1.85, IMX:1.6, STRK:0.42, MANTA:1.2,
-  SHIB:0.000024, PEPE:0.0000085, FLOKI:0.000085, BONK:0.000025, WIF:2.8,
-  XMR:165, ZEC:32, DASH:29, XVG:0.007,
-  CRO:0.095, OKB:48, HT:2.8,
-  OSMO:0.65, INJ:22, KAVA:0.62, JUNO:0.28, STARS:0.014,
-  DAI:1, BUSD:1, TUSD:1,
-  SAND:0.38, MANA:0.42, AXS:6.5, ENJ:0.18, GALA:0.023,
-  FET:1.8, OCEAN:0.82, RNDR:6.2, WLD:2.1,
-  GRT:0.19, LRC:0.22, CHZ:0.085, BAT:0.22, ZIL:0.012,
-  IOTA:0.18, THETA:0.92, EOS:0.72, XTZ:0.82, XEM:0.028,
-  WAVES:2.1, QTUM:2.8, KCS:11, ROSE:0.09, CFX:0.18,
-  KSM:28, ZEN:10, DCR:18, RVN:0.018, SC:0.0045,
-  DGB:0.0095,
-};
+export const runtime = "nodejs"; // nodejs for full fetch support + better error logs
 
-// Support both server-only and legacy NEXT_PUBLIC env var names.
-// Using these on the server does not expose them to the client bundle.
-const CN_KEY =
-  process.env.CHANGENOW_API_KEY ||
-  process.env.NEXT_PUBLIC_CHANGENOW_API_KEY ||
-  process.env.NEXT_PUBLIC_CHANGENOW_KEY ||
-  process.env.NEXT_PUBLIC_CN_API_KEY ||
-  process.env.NEXT_PUBLIC_CN_KEY ||
-  "";
-const SS_KEY =
-  process.env.SIMPLESWAP_API_KEY ||
-  process.env.NEXT_PUBLIC_SIMPLESWAP_API_KEY ||
-  process.env.NEXT_PUBLIC_SIMPLESWAP_KEY ||
-  process.env.NEXT_PUBLIC_SS_API_KEY ||
-  process.env.NEXT_PUBLIC_SS_KEY ||
-  "";
-const SZ_KEY =
-  process.env.SWAPZONE_API_KEY ||
-  process.env.NEXT_PUBLIC_SWAPZONE_API_KEY ||
-  process.env.NEXT_PUBLIC_SWAPZONE_KEY ||
-  process.env.NEXT_PUBLIC_SZ_API_KEY ||
-  process.env.NEXT_PUBLIC_SZ_KEY ||
-  "";
+// ── Keys — server-side only, never sent to browser ────────────
+// Supports both old NEXT_PUBLIC_ names and new server-only names
+// so you don't need to add new Vercel vars if old ones exist.
+const CN_KEY = process.env.CHANGENOW_API_KEY  || process.env.NEXT_PUBLIC_CHANGENOW_API_KEY  || "";
+const SS_KEY = process.env.SIMPLESWAP_API_KEY || process.env.NEXT_PUBLIC_SIMPLESWAP_API_KEY || "";
+const SZ_KEY = process.env.SWAPZONE_API_KEY   || process.env.NEXT_PUBLIC_SWAPZONE_API_KEY   || "";
 
+// ── API base URLs ──────────────────────────────────────────────
 const CN_V1 = "https://api.changenow.io/v1";
 const CN_V2 = "https://api.changenow.io/v2";
-const SS_BASE = "https://api.simpleswap.io/v3";
-const SZ_BASE = "https://api.swapzone.io/v1";
+const SS_V3 = "https://api.simpleswap.io/v3";
+const SZ_V1 = "https://api.swapzone.io/v1";
 
-async function fetchWithTimeout(url, options = {}, timeoutMs = 12000) {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    return await fetch(url, { ...options, signal: controller.signal });
-  } finally {
-    clearTimeout(timeoutId);
-  }
-}
-
+// ── SimpleSwap V3 network mapping ─────────────────────────────
 const SS_NETWORKS = {
-  BTC:"btc", ETH:"eth", USDT:"eth", BNB:"bsc", SOL:"sol",
-  USDC:"eth", XRP:"xrp", DOGE:"doge", ADA:"ada", TRX:"trx",
-  AVAX:"avax", TON:"ton", DOT:"dot", MATIC:"matic", LTC:"ltc",
-  BCH:"bch", ATOM:"atom", NEAR:"near", FTM:"ftm", ALGO:"algo",
-  XLM:"xlm", VET:"vet", HBAR:"hbar", ICP:"icp", APT:"apt",
-  SUI:"sui", SEI:"sei", STX:"stx", EGLD:"egld", FIL:"fil",
-  UNI:"eth", LINK:"eth", AAVE:"eth", CRV:"eth", MKR:"eth",
-  SNX:"eth", COMP:"eth", LDO:"eth", CAKE:"bsc", "1INCH":"eth",
-  ARB:"arbitrum", OP:"optimism", IMX:"imx", STRK:"starknet", MANTA:"manta",
-  SHIB:"eth", PEPE:"eth", FLOKI:"eth", BONK:"sol", WIF:"sol",
-  XMR:"xmr", ZEC:"zec", DASH:"dash", XVG:"xvg",
-  CRO:"cronos", OKB:"eth", HT:"eth",
-  OSMO:"osmo", INJ:"inj", KAVA:"kava", JUNO:"juno", STARS:"stargaze",
-  DAI:"eth", BUSD:"bsc", TUSD:"eth",
-  SAND:"eth", MANA:"eth", AXS:"eth", ENJ:"eth", GALA:"eth",
-  FET:"eth", OCEAN:"eth", RNDR:"eth", WLD:"eth",
-  GRT:"eth", LRC:"eth", CHZ:"eth", BAT:"eth", ZIL:"zil",
-  IOTA:"iota", THETA:"theta", EOS:"eos", XTZ:"xtz", XEM:"nem",
-  WAVES:"waves", QTUM:"qtum", KCS:"kcs", ROSE:"oasis", CFX:"cfx",
-  KSM:"ksm", ZEN:"zen", DCR:"dcr", RVN:"rvn", SC:"sc", DGB:"dgb",
+  BTC:"btc",    ETH:"eth",      USDT:"eth",    BNB:"bsc",     SOL:"sol",
+  USDC:"eth",   XRP:"xrp",      DOGE:"doge",   ADA:"ada",     TRX:"trx",
+  AVAX:"avax",  TON:"ton",      DOT:"dot",     MATIC:"matic", LTC:"ltc",
+  BCH:"bch",    ATOM:"atom",    NEAR:"near",   FTM:"ftm",     ALGO:"algo",
+  XLM:"xlm",    VET:"vet",      HBAR:"hbar",   ICP:"icp",     APT:"apt",
+  SUI:"sui",    SEI:"sei",      STX:"stx",     EGLD:"egld",   FIL:"fil",
+  UNI:"eth",    LINK:"eth",     AAVE:"eth",    CRV:"eth",     MKR:"eth",
+  SNX:"eth",    COMP:"eth",     LDO:"eth",     CAKE:"bsc",    "1INCH":"eth",
+  ARB:"arbitrum",OP:"optimism", IMX:"imx",     STRK:"starknet",
+  SHIB:"eth",   PEPE:"eth",     FLOKI:"eth",   BONK:"sol",    WIF:"sol",
+  XMR:"xmr",    ZEC:"zec",      DASH:"dash",
+  CRO:"cronos", OKB:"eth",      HT:"eth",
+  OSMO:"osmo",  INJ:"inj",      KAVA:"kava",   JUNO:"juno",
+  DAI:"eth",    BUSD:"bsc",     TUSD:"eth",
+  SAND:"eth",   MANA:"eth",     AXS:"eth",     ENJ:"eth",     GALA:"eth",
+  FET:"eth",    OCEAN:"eth",    RNDR:"eth",    WLD:"eth",
+  GRT:"eth",    LRC:"eth",      CHZ:"eth",     BAT:"eth",
+  ZIL:"zil",    THETA:"theta",  EOS:"eos",     XTZ:"xtz",     XEM:"nem",
+  WAVES:"waves",QTUM:"qtum",    ROSE:"oasis",  CFX:"cfx",
+  KSM:"ksm",    ZEN:"zen",      DCR:"dcr",     RVN:"rvn",     DGB:"dgb",
 };
 
-const fallbackRate = (from, to, amount, discount) =>
-  ((amount * (BASE_RATES[from] || 1)) / (BASE_RATES[to] || 1)) * discount;
+// ── Normalised quote shape returned to the browser ─────────────
+// {
+//   provider: string,
+//   fromToken: string,
+//   toToken: string,
+//   amountIn: number,
+//   amountOut: number,
+//   rate: number,            — amountOut / amountIn
+//   estimatedTime: string,
+//   fees: number,            — % fee already included in rate
+//   minAmount: number,       — minimum input for this pair
+//   quotaId: string,         — Swapzone only
+//   simulated: boolean,      — true = fell back to estimate
+//   error: string | null,
+// }
 
-async function fetchChangeNowRate(from, to, amount) {
+// ─────────────────────────────────────────────────────────────
+// ChangeNOW — V2 rate + V1 minimum (parallel)
+// ─────────────────────────────────────────────────────────────
+async function rateChangeNow(from, to, amount) {
+  if (!CN_KEY) return { provider: "ChangeNOW", error: "No API key configured", simulated: true };
+
   try {
-    if (!CN_KEY) throw new Error("No CN key");
-    const [v2RateRes, minRes] = await Promise.all([
-      fetchWithTimeout(
+    const [rateRes, minRes] = await Promise.all([
+      fetch(
         `${CN_V2}/exchange/estimated-amount?fromCurrency=${from.toLowerCase()}&toCurrency=${to.toLowerCase()}&fromAmount=${amount}&flow=standard&type=direct`,
-        { headers: { "x-changenow-api-key": CN_KEY }, cache: "no-store" }
+        { headers: { "x-changenow-api-key": CN_KEY }, signal: AbortSignal.timeout(8000) }
       ),
-      fetchWithTimeout(
+      fetch(
         `${CN_V1}/min-amount/${from.toLowerCase()}_${to.toLowerCase()}?api_key=${CN_KEY}`,
-        { cache: "no-store" }
+        { signal: AbortSignal.timeout(5000) }
       ),
     ]);
 
-    let estimated = 0;
-    let sourceStatus = v2RateRes.status || 0;
-    if (v2RateRes.ok) {
-      const data = await v2RateRes.json();
-      estimated = parseFloat(data?.toAmount || data?.estimatedAmount || 0);
-    }
-
-    // Some pairs/keys return 400 on V2. Fallback to stable V1 quote endpoint.
-    if (!estimated || Number.isNaN(estimated)) {
-      const v1RateRes = await fetchWithTimeout(
+    if (!rateRes.ok) {
+      const body = await rateRes.text();
+      // ChangeNOW V2 sometimes rejects — try V1 fallback
+      const v1Res = await fetch(
         `${CN_V1}/exchange-amount/${amount}/${from.toLowerCase()}_${to.toLowerCase()}?api_key=${CN_KEY}`,
-        { cache: "no-store" }
+        { signal: AbortSignal.timeout(8000) }
       );
-      sourceStatus = v1RateRes.status || sourceStatus;
-      if (!v1RateRes.ok) throw new Error(`ChangeNOW ${v1RateRes.status}`);
-      const v1Data = await v1RateRes.json();
-      estimated = parseFloat(v1Data?.estimatedAmount || v1Data?.toAmount || 0);
+      if (!v1Res.ok) throw new Error(`CN HTTP ${rateRes.status}: ${body}`);
+      const v1Data = await v1Res.json();
+      const amountOut = parseFloat(v1Data?.estimatedAmount || 0);
+      if (!amountOut) throw new Error("CN V1: no amount");
+      return {
+        provider: "ChangeNOW", fromToken: from, toToken: to,
+        amountIn: amount, amountOut, rate: amountOut / amount,
+        estimatedTime: "2–5 min", fees: 0.4, minAmount: 0,
+        quotaId: "", simulated: false, error: null,
+      };
     }
 
-    if (!estimated || Number.isNaN(estimated)) throw new Error("No CN amount");
+    const rateData = await rateRes.json();
+    const amountOut = parseFloat(rateData?.toAmount || rateData?.estimatedAmount || 0);
+    if (!amountOut || isNaN(amountOut)) throw new Error("CN: empty amount");
 
     let minAmount = 0;
     if (minRes.ok) {
@@ -131,214 +121,172 @@ async function fetchChangeNowRate(from, to, amount) {
     }
 
     return {
-      provider: "ChangeNOW",
-      rate: estimated,
-      rawRate: estimated / amount,
-      minAmount,
-      available: true,
-      simulated: false,
-      diagnostics: { status: "ok", httpStatus: sourceStatus || 200 },
+      provider: "ChangeNOW", fromToken: from, toToken: to,
+      amountIn: amount, amountOut, rate: amountOut / amount,
+      estimatedTime: "2–5 min", fees: 0.4, minAmount,
+      quotaId: "", simulated: false, error: null,
     };
   } catch (err) {
-    const m = String(err?.message || "");
-    const statusMatch = m.match(/(\d{3})/);
-    const httpStatus = statusMatch ? Number(statusMatch[1]) : 0;
-    const rate = fallbackRate(from, to, amount, 0.996);
+    console.error("[CN rate]", err.message);
     return {
-      provider: "ChangeNOW",
-      rate,
-      rawRate: rate / amount,
-      available: true,
-      simulated: true,
-      diagnostics: {
-        status: "fallback",
-        httpStatus,
-        reason: m || "unknown_error",
-      },
+      provider: "ChangeNOW", fromToken: from, toToken: to,
+      amountIn: amount, amountOut: 0, rate: 0,
+      estimatedTime: "2–5 min", fees: 0.4, minAmount: 0,
+      quotaId: "", simulated: true, error: err.message,
     };
   }
 }
 
-async function fetchSimpleSwapRate(from, to, amount) {
+// ─────────────────────────────────────────────────────────────
+// SimpleSwap — V3 estimates
+// ─────────────────────────────────────────────────────────────
+async function rateSimpleSwap(from, to, amount) {
+  if (!SS_KEY) return { provider: "SimpleSwap", error: "No API key configured", simulated: true };
+
+  const netFrom = SS_NETWORKS[from.toUpperCase()] || from.toLowerCase();
+  const netTo   = SS_NETWORKS[to.toUpperCase()]   || to.toLowerCase();
+
   try {
-    if (!SS_KEY) throw new Error("No SS key");
-    const netFrom = SS_NETWORKS[from] || from.toLowerCase();
-    const netToDefault = SS_NETWORKS[to] || to.toLowerCase();
-
-    const parseAmount = (payload) => {
-      const result = payload?.result;
-      if (Array.isArray(result) && result.length > 0) {
-        return parseFloat(result[0]?.amountTo ?? result[0]?.amount ?? 0);
+    const res = await fetch(
+      `${SS_V3}/estimates?tickerFrom=${from.toLowerCase()}&networkFrom=${netFrom}&tickerTo=${to.toLowerCase()}&networkTo=${netTo}&amount=${amount}&fixed=false`,
+      {
+        headers: { "x-api-key": SS_KEY, "Accept": "application/json" },
+        signal: AbortSignal.timeout(8000),
       }
-      return parseFloat(
-        result?.amountTo ??
-        result?.amount ??
-        payload?.amountTo ??
-        payload?.estimatedAmount ??
-        result ??
-        0
-      );
-    };
+    );
 
-    const requestEstimate = async (networkTo) => {
-      const url = `${SS_BASE}/estimates?tickerFrom=${from.toLowerCase()}&networkFrom=${netFrom}&tickerTo=${to.toLowerCase()}&networkTo=${networkTo}&amount=${amount}&fixed=false`;
-      const res = await fetchWithTimeout(url, {
-        headers: { "x-api-key": SS_KEY, Accept: "application/json" },
-        cache: "no-store",
-      });
-      if (!res.ok) return { ok: false, status: res.status, amount: 0 };
-      const data = await res.json();
-      const parsed = parseAmount(data);
-      return { ok: true, status: res.status, amount: parsed };
-    };
-
-    // Try preferred network first, then alt routes commonly needed for stables.
-    const candidateNetworks = [
-      netToDefault,
-      // For USDT/USDC/etc, matching source network often resolves "No amount" responses.
-      netFrom,
-      "eth",
-      "bsc",
-      "trx",
-      "sol",
-    ].filter((v, i, arr) => v && arr.indexOf(v) === i);
-
-    let estimated = 0;
-    let lastStatus = 0;
-    for (const networkTo of candidateNetworks) {
-      const out = await requestEstimate(networkTo);
-      if (out.status) lastStatus = out.status;
-      if (out.ok && out.amount && !Number.isNaN(out.amount)) {
-        estimated = out.amount;
-        break;
-      }
+    if (!res.ok) {
+      const body = await res.text();
+      throw new Error(`SS HTTP ${res.status}: ${body}`);
     }
 
-    // Final retry without explicit networks if all network-pinned attempts fail.
-    if (!estimated || Number.isNaN(estimated)) {
-      const fallbackUrl = `${SS_BASE}/estimates?tickerFrom=${from.toLowerCase()}&tickerTo=${to.toLowerCase()}&amount=${amount}&fixed=false`;
-      const res2 = await fetchWithTimeout(fallbackUrl, {
-        headers: { "x-api-key": SS_KEY, Accept: "application/json" },
-        cache: "no-store",
-      });
-      if (res2.ok) {
-        lastStatus = res2.status;
-        const data2 = await res2.json();
-        estimated = parseAmount(data2);
-      } else {
-        lastStatus = res2.status;
-      }
-    }
-
-    if (!estimated || Number.isNaN(estimated)) throw new Error("No SS amount");
-    return {
-      provider: "SimpleSwap",
-      rate: estimated,
-      rawRate: estimated / amount,
-      available: true,
-      simulated: false,
-      diagnostics: { status: "ok", httpStatus: lastStatus || 200 },
-    };
-  } catch (err) {
-    const m = String(err?.message || "");
-    const statusMatch = m.match(/(\d{3})/);
-    const httpStatus = statusMatch ? Number(statusMatch[1]) : 0;
-    const rate = fallbackRate(from, to, amount, 0.992);
-    return {
-      provider: "SimpleSwap",
-      rate,
-      rawRate: rate / amount,
-      available: true,
-      simulated: true,
-      diagnostics: {
-        status: "fallback",
-        httpStatus,
-        reason: m || "unknown_error",
-      },
-    };
-  }
-}
-
-async function fetchSwapzoneRate(from, to, amount) {
-  try {
-    if (!SZ_KEY) throw new Error("No SZ key");
-    const url = `${SZ_BASE}/exchange/get-rate?from=${from.toLowerCase()}&to=${to.toLowerCase()}&amount=${amount}&rateType=all&chooseRate=best&noRefundAddress=false&apikey=${SZ_KEY}`;
-    const res = await fetchWithTimeout(url, { headers: { "x-api-key": SZ_KEY }, cache: "no-store" });
-    if (!res.ok) throw new Error(`Swapzone ${res.status}`);
     const data = await res.json();
-    const amountTo = parseFloat(data?.amountTo ?? 0);
-    if (!amountTo || Number.isNaN(amountTo)) throw new Error("No SZ amount");
+    // V3 may return: { result: { amountTo } } or { result: "0.123" }
+    const amountOut = parseFloat(
+      data?.result?.amountTo ?? data?.result ?? data?.amountTo ?? 0
+    );
+    if (!amountOut || isNaN(amountOut)) throw new Error("SS: empty amount");
+
     return {
-      provider: "Swapzone",
-      rate: amountTo,
-      rawRate: amountTo / amount,
-      quotaId: data?.quotaId || "",
-      adapter: data?.adapter || "",
-      available: true,
-      simulated: false,
-      diagnostics: { status: "ok", httpStatus: 200 },
+      provider: "SimpleSwap", fromToken: from, toToken: to,
+      amountIn: amount, amountOut, rate: amountOut / amount,
+      estimatedTime: "5–20 min", fees: 0.4, minAmount: 0,
+      quotaId: "", simulated: false, error: null,
     };
   } catch (err) {
-    const m = String(err?.message || "");
-    const statusMatch = m.match(/(\d{3})/);
-    const httpStatus = statusMatch ? Number(statusMatch[1]) : 0;
-    const rate = fallbackRate(from, to, amount, 0.989);
+    console.error("[SS rate]", err.message);
     return {
-      provider: "Swapzone",
-      rate,
-      rawRate: rate / amount,
-      available: true,
-      simulated: true,
-      diagnostics: {
-        status: "fallback",
-        httpStatus,
-        reason: m || "unknown_error",
-      },
+      provider: "SimpleSwap", fromToken: from, toToken: to,
+      amountIn: amount, amountOut: 0, rate: 0,
+      estimatedTime: "5–20 min", fees: 0.4, minAmount: 0,
+      quotaId: "", simulated: true, error: err.message,
     };
   }
 }
 
-export async function POST(req) {
-  try {
-    const body = await req.json();
-    const from = String(body?.from || "").toUpperCase();
-    const to = String(body?.to || "").toUpperCase();
-    const amount = Number(body?.amount);
+// ─────────────────────────────────────────────────────────────
+// Swapzone — returns quotaId for create call
+// ─────────────────────────────────────────────────────────────
+async function rateSwapzone(from, to, amount) {
+  if (!SZ_KEY) return { provider: "Swapzone", error: "No API key configured", simulated: true };
 
-    if (!from || !to || !Number.isFinite(amount) || amount <= 0) {
-      return NextResponse.json({ ok: false, error: "Invalid rate request payload" }, { status: 400 });
+  try {
+    const res = await fetch(
+      `${SZ_V1}/exchange/get-rate?from=${from.toLowerCase()}&to=${to.toLowerCase()}&amount=${amount}&rateType=all&chooseRate=best&noRefundAddress=false&apikey=${SZ_KEY}`,
+      {
+        headers: { "x-api-key": SZ_KEY },
+        signal: AbortSignal.timeout(8000),
+      }
+    );
+
+    if (!res.ok) {
+      const body = await res.text();
+      throw new Error(`SZ HTTP ${res.status}: ${body}`);
     }
 
+    const data = await res.json();
+    const amountOut = parseFloat(data?.amountTo ?? 0);
+    if (!amountOut || isNaN(amountOut)) throw new Error("SZ: empty amount");
+
+    return {
+      provider: "Swapzone", fromToken: from, toToken: to,
+      amountIn: amount, amountOut, rate: amountOut / amount,
+      estimatedTime: "5–30 min", fees: 0.4, minAmount: 0,
+      quotaId: data?.quotaId || "", simulated: false, error: null,
+    };
+  } catch (err) {
+    console.error("[SZ rate]", err.message);
+    return {
+      provider: "Swapzone", fromToken: from, toToken: to,
+      amountIn: amount, amountOut: 0, rate: 0,
+      estimatedTime: "5–30 min", fees: 0.4, minAmount: 0,
+      quotaId: "", simulated: true, error: err.message,
+    };
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
+// POST /api/swap/rate
+// Body: { from: "BTC", to: "ETH", amount: 0.1 }
+// Returns: { quotes: [...], best: {...}, minAmount: number }
+// ─────────────────────────────────────────────────────────────
+export async function POST(request) {
+  try {
+    const { from, to, amount } = await request.json();
+
+    if (!from || !to || !amount || isNaN(parseFloat(amount))) {
+      return Response.json({ error: "Missing required fields: from, to, amount" }, { status: 400 });
+    }
+
+    const parsed = parseFloat(amount);
+
+    // All 3 providers in parallel — one failure never blocks the others
     const [cn, ss, sz] = await Promise.allSettled([
-      fetchChangeNowRate(from, to, amount),
-      fetchSimpleSwapRate(from, to, amount),
-      fetchSwapzoneRate(from, to, amount),
+      rateChangeNow(from, to, parsed),
+      rateSimpleSwap(from, to, parsed),
+      rateSwapzone(from, to, parsed),
     ]);
 
-    const comparison = [cn, ss, sz]
-      .filter((r) => r.status === "fulfilled" && r.value.available && r.value.rate > 0)
-      .map((r) => r.value)
-      .sort((a, b) => b.rate - a.rate);
-
-    const cnResult = cn.status === "fulfilled" ? cn.value : null;
-    const realMin = cnResult?.minAmount || 0;
-    const minAmount = realMin > 0
-      ? parseFloat((realMin * 1.1).toPrecision(4))
-      : parseFloat((2 / (BASE_RATES[from] || 1)).toPrecision(4));
-
-    const best = comparison[0] || {
-      provider: "ChangeNOW",
-      rate: fallbackRate(from, to, amount, 0.996),
-      rawRate: fallbackRate(from, to, amount, 0.996) / amount,
-      available: true,
-      simulated: true,
-    };
-
-    const diagnostics = Object.fromEntries(
-      comparison.map((q) => [q.provider, q.diagnostics || null])
+    const allQuotes = [cn, ss, sz].map(r =>
+      r.status === "fulfilled" ? r.value : { simulated: true, amountOut: 0, error: r.reason?.message }
     );
-    return NextResponse.json({ ok: true, best, comparison, minAmount, diagnostics }, { status: 200 });
-  } catch {
-    return NextResponse.json({ ok: false, error: "Failed to fetch rates" }, { status: 500 });
+
+    // Live quotes sorted best-first
+    const liveQuotes = allQuotes
+      .filter(q => !q.simulated && q.amountOut > 0)
+      .sort((a, b) => b.amountOut - a.amountOut);
+
+    const best = liveQuotes[0] || allQuotes.find(q => q.amountOut > 0) || allQuotes[0];
+
+    // Real minimum from ChangeNOW with 10% safety buffer
+    const cnQ    = cn.status === "fulfilled" ? cn.value : null;
+    const rawMin = cnQ?.minAmount || 0;
+    const minAmount = rawMin > 0
+      ? parseFloat((rawMin * 1.1).toPrecision(4))
+      : 0;
+
+    return Response.json({
+      quotes:     allQuotes,
+      best:       best || null,
+      minAmount,
+      timestamp:  Date.now(),
+    });
+
+  } catch (err) {
+    console.error("[/api/swap/rate]", err);
+    return Response.json({ error: "Rate fetch failed", detail: err.message }, { status: 500 });
   }
+}
+
+// Health check
+export async function GET() {
+  return Response.json({
+    status: "ok",
+    providers: {
+      ChangeNOW:  !!CN_KEY,
+      SimpleSwap: !!SS_KEY,
+      Swapzone:   !!SZ_KEY,
+    },
+    timestamp: Date.now(),
+  });
 }
