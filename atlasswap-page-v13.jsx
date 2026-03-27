@@ -1,6 +1,9 @@
 "use client";
 import { useState, useEffect, useRef, useCallback } from "react";
 
+// Public inbox for the Contacts modal (service issues). Replace with your real address.
+const SUPPORT_EMAIL = "support@atlasswap.io";
+
 // ═══════════════════════════════════════════════════════════════
 // COIN DATA — 100 coins (expanded from 25)
 // Covers top 100 by market cap + high-demand swap pairs
@@ -892,6 +895,7 @@ export default function AtlasSwapApp() {
   const [showBackend, setShowBackend] = useState(false);
   const [showPartners, setShowPartners] = useState(false);
   const [showAbout, setShowAbout] = useState(false);
+  const [showContacts, setShowContacts] = useState(false);
   const [showExchange, setShowExchange] = useState(false);
   const [showFeatures, setShowFeatures] = useState(false);
   const [showWallet, setShowWallet] = useState(false);
@@ -1428,11 +1432,20 @@ export default function AtlasSwapApp() {
             { label: "Features",    action: () => setShowFeatures(true) },
             { label: "API Partners",action: () => setShowPartners(true) },
             { label: "About",       action: () => setShowAbout(true) },
+            { label: "Contacts",    action: () => setShowContacts(true), sub: "For service issues" },
           ].map(item => (
-            <a key={item.label} href="#"
+            <a
+              key={item.label}
+              href="#"
               className="nav-link"
               onClick={e => { e.preventDefault(); item.action && item.action(); }}
-            >{item.label}</a>
+              style={item.sub ? { display: "flex", flexDirection: "column", alignItems: "flex-start", gap: "3px", lineHeight: 1.15 } : undefined}
+            >
+              <span>{item.label}</span>
+              {item.sub ? (
+                <span style={{ fontSize: "9px", fontWeight: 500, color: "rgba(240,244,255,0.32)", letterSpacing: "0.04em" }}>{item.sub}</span>
+              ) : null}
+            </a>
           ))}
         </div>
 
@@ -2323,15 +2336,51 @@ export default function AtlasSwapApp() {
             atlasswap.io
           </span>
         </div>
-        <div style={{ display: "flex", gap: "24px" }}>
-          {["Terms", "Privacy", "Contact", "API Docs"].map(l => (
-            <a key={l} href="#" style={{
-              fontSize: "12px", color: "rgba(240,244,255,0.3)",
-              textDecoration: "none", transition: "color 0.2s",
-            }}
-            onMouseEnter={e => e.currentTarget.style.color = "#fff"}
-            onMouseLeave={e => e.currentTarget.style.color = "rgba(240,244,255,0.3)"}
-            >{l}</a>
+        <div style={{ display: "flex", gap: "24px", alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
+          {[
+            { key: "terms", label: "Terms", href: "#" },
+            { key: "privacy", label: "Privacy", href: "#" },
+            {
+              key: "contact",
+              label: "Contact",
+              href: `mailto:${SUPPORT_EMAIL}?subject=${encodeURIComponent("AtlasSwap — inquiry")}`,
+              showEmail: true,
+            },
+            { key: "api", label: "API Docs", href: "#" },
+          ].map((item) => (
+            item.showEmail ? (
+              <span key={item.key} style={{ display: "inline-flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                <a
+                  href={item.href}
+                  style={{
+                    fontSize: "12px", color: "rgba(240,244,255,0.3)",
+                    textDecoration: "none", transition: "color 0.2s",
+                  }}
+                  onMouseEnter={e => { e.currentTarget.style.color = "#fff"; }}
+                  onMouseLeave={e => { e.currentTarget.style.color = "rgba(240,244,255,0.3)"; }}
+                >{item.label}</a>
+                <a
+                  href={item.href}
+                  style={{
+                    fontSize: "12px", color: "#00E5A0", fontWeight: 600,
+                    textDecoration: "none", transition: "opacity 0.2s",
+                  }}
+                  onMouseEnter={e => { e.currentTarget.style.opacity = "1"; }}
+                  onMouseLeave={e => { e.currentTarget.style.opacity = "0.85"; }}
+                >{SUPPORT_EMAIL}</a>
+              </span>
+            ) : (
+              <a
+                key={item.key}
+                href={item.href}
+                style={{
+                  fontSize: "12px", color: "rgba(240,244,255,0.3)",
+                  textDecoration: "none", transition: "color 0.2s",
+                }}
+                onMouseEnter={e => { e.currentTarget.style.color = "#fff"; }}
+                onMouseLeave={e => { e.currentTarget.style.color = "rgba(240,244,255,0.3)"; }}
+              >{item.label}</a>
+            )
           ))}
         </div>
         <div style={{ fontSize: "11px", color: "rgba(240,244,255,0.2)" }}>
@@ -2788,6 +2837,57 @@ export default function AtlasSwapApp() {
                   <span key={t} style={{fontSize:"10px",color:"#00E5A0",fontWeight:700,background:"rgba(0,229,160,0.08)",border:"1px solid rgba(0,229,160,0.18)",borderRadius:"6px",padding:"3px 9px",letterSpacing:"0.05em"}}>{t}</span>
                 ))}
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ══════════════════════════════════════════
+          CONTACTS MODAL — service issues
+      ══════════════════════════════════════════ */}
+      {showContacts && (
+        <div onClick={() => setShowContacts(false)} style={{
+          position:"fixed",inset:0,zIndex:1000,
+          background:"rgba(0,0,0,0.85)",backdropFilter:"blur(10px)",
+          display:"flex",alignItems:"center",justifyContent:"center",
+          animation:"fadeIn 0.2s ease",
+        }}>
+          <div onClick={e=>e.stopPropagation()} style={{
+            background:"#0C1220",border:"1px solid rgba(255,255,255,0.09)",
+            borderRadius:"24px",padding:"36px",width:"480px",maxWidth:"92vw",
+            boxShadow:"0 40px 80px rgba(0,0,0,0.7)",animation:"dropIn 0.2s ease",
+          }}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:"22px"}}>
+              <div>
+                <div style={{fontSize:"10px",color:"#00E5A0",fontWeight:700,letterSpacing:"0.12em",marginBottom:"8px"}}>✦ SUPPORT</div>
+                <div style={{fontFamily:"'Syne',sans-serif",fontWeight:800,fontSize:"22px",letterSpacing:"-0.02em"}}>Contacts</div>
+                <div style={{fontSize:"13px",color:"rgba(240,244,255,0.45)",marginTop:"8px",lineHeight:1.55}}>
+                  For service issues — outages, failed or stuck swaps, rate errors, or anything that blocks you from using AtlasSwap.
+                </div>
+              </div>
+              <button onClick={()=>setShowContacts(false)} style={{background:"rgba(255,255,255,0.06)",border:"1px solid rgba(255,255,255,0.1)",borderRadius:"10px",width:34,height:34,color:"rgba(255,255,255,0.5)",cursor:"pointer",fontSize:"14px",flexShrink:0,marginLeft:"16px"}}>✕</button>
+            </div>
+
+            <div style={{background:"rgba(0,229,160,0.05)",border:"1px solid rgba(0,229,160,0.14)",borderRadius:"14px",padding:"18px 20px",marginBottom:"20px"}}>
+              <div style={{fontSize:"12px",color:"rgba(240,244,255,0.5)",lineHeight:1.75,marginBottom:"14px"}}>
+                Please include your <strong style={{color:"#fff",fontWeight:600}}>exchange ID</strong> (if you have one), the <strong style={{color:"#fff",fontWeight:600}}>coins and amount</strong>, and a short description of what went wrong. We route technical issues to the right team as quickly as we can.
+              </div>
+              <a
+                href={`mailto:${SUPPORT_EMAIL}?subject=${encodeURIComponent("AtlasSwap — service issue")}`}
+                style={{
+                  display:"inline-flex",alignItems:"center",justifyContent:"center",gap:"8px",
+                  width:"100%",padding:"12px 18px",borderRadius:"12px",border:"none",cursor:"pointer",
+                  fontFamily:"'Outfit',sans-serif",fontWeight:700,fontSize:"14px",letterSpacing:"0.03em",
+                  background:"linear-gradient(135deg, #00E5A0, #00C4FF)",color:"#070B14",
+                  textDecoration:"none",boxShadow:"0 4px 16px rgba(0,229,160,0.25)",
+                }}
+              >
+                Email {SUPPORT_EMAIL}
+              </a>
+            </div>
+
+            <div style={{fontSize:"11px",color:"rgba(240,244,255,0.22)",textAlign:"center",lineHeight:1.65}}>
+              We do not offer investment or trading advice. For wallet or blockchain questions, contact your wallet provider.
             </div>
           </div>
         </div>
