@@ -1,3 +1,5 @@
+import { parseCnTickerForSimpleSwap } from "../../../lib/cnTickerMap.js";
+
 // ═══════════════════════════════════════════════════════════════
 // FILE: atlasswap/app/api/swap/rate/route.js
 //
@@ -57,18 +59,38 @@ const SS_NETWORKS = {
   KSM:"ksm",    ZEN:"zen",      DCR:"dcr",     RVN:"rvn",     DGB:"dgb",
 };
 
+// Extra SimpleSwap network aliases (ticker → try these network ids in order)
+const SS_NETWORK_ALIASES = {
+  FTM: ["ftm", "fantom", "opera"],
+  MATIC: ["matic", "polygon"],
+  AVAX: ["avax", "cchain"],
+};
+
 // ChangeNOW network hints. For multi-chain tokens (USDT/USDC/etc),
 // we try several common networks because provider-side defaults vary by pair.
 const CN_NETWORKS = {
-  BTC: ["btc"], ETH: ["eth"], BNB: ["bsc"], SOL: ["sol"], XRP: ["xrp"], TRX: ["trx"],
+  BTC: ["btc"], ETH: ["eth", "arbitrum", "optimism", "base", "bsc", "matic"], BNB: ["bsc"], SOL: ["sol"], XRP: ["xrp"], TRX: ["trx"],
   MATIC: ["matic"], AVAX: ["avaxc", "avax"], LTC: ["ltc"], BCH: ["bch"], DOGE: ["doge"],
   ADA: ["ada"], XLM: ["xlm"], DOT: ["dot"], ATOM: ["atom"], NEAR: ["near"], TON: ["ton"],
-  USDT: ["trx", "eth", "bsc", "sol", "matic"],
-  USDC: ["eth", "bsc", "sol", "matic", "avaxc"],
+  USDT: ["trx", "eth", "bsc", "sol", "matic", "arbitrum", "optimism", "base"],
+  USDC: ["eth", "bsc", "sol", "matic", "avaxc", "arbitrum", "optimism", "base"],
   DAI: ["eth", "bsc", "matic"],
   BUSD: ["bsc", "eth"],
   TUSD: ["eth", "bsc"],
 };
+
+/** ChangeNOW tickers that already encode the network (usdcarb, ethbase, …) — no multi-network grid. */
+function isCompositeCnTicker(t) {
+  const x = String(t || "").toLowerCase();
+  const standalone = new Set([
+    "btc", "eth", "bnb", "sol", "xrp", "ada", "doge", "ltc", "bch", "avax", "matic", "trx", "atom", "near", "ftm", "dot", "ton",
+    "usdt", "usdc", "dai", "busd", "tusd", "xlm", "etc", "arb", "op", "algo", "apt", "sui", "sei", "cro", "xmr", "zec", "dash",
+  ]);
+  if (standalone.has(x)) return false;
+  if (x.length <= 4) return false;
+  if (x.length > 6) return true;
+  return /(arb|base|op|bsc|trc|erc|arc|apt|celo|zksync|strk|lna|mon|algo|sui|avax|nft|matic|sol|trx)/.test(x);
+}
 
 // ── Normalised quote shape returned to the browser ─────────────
 // {
@@ -93,10 +115,18 @@ async function rateChangeNow(from, to, amount) {
   if (!CN_KEY) return { provider: "ChangeNOW", error: "No API key configured", simulated: true };
 
   try {
+    const fromLc = String(from || "").toLowerCase();
+    const toLc = String(to || "").toLowerCase();
     const fromCoin = String(from || "").toUpperCase();
     const toCoin = String(to || "").toUpperCase();
-    const fromNetworks = CN_NETWORKS[fromCoin] || [fromCoin.toLowerCase()];
-    const toNetworks = CN_NETWORKS[toCoin] || [toCoin.toLowerCase()];
+
+    const fromNetworks = isCompositeCnTicker(fromLc)
+      ? [undefined]
+      : CN_NETWORKS[fromCoin] || [fromLc];
+    const toNetworks = isCompositeCnTicker(toLc)
+      ? [undefined]
+      : CN_NETWORKS[toCoin] || [toLc];
+
     const networkPairs = [];
     toNetworks.forEach((tn) => networkPairs.push({ fromNetwork: undefined, toNetwork: tn }));
     fromNetworks.forEach((fn) => networkPairs.push({ fromNetwork: fn, toNetwork: undefined }));
@@ -107,10 +137,11 @@ async function rateChangeNow(from, to, amount) {
 
     let amountOut = 0;
     let lastErr = "";
-    for (const pair of networkPairs) {
+
+    const tryPair = async (pair) => {
       const qs = new URLSearchParams({
-        fromCurrency: from.toLowerCase(),
-        toCurrency: to.toLowerCase(),
+        fromCurrency: fromLc,
+        toCurrency: toLc,
         fromAmount: String(amount),
         flow: "standard",
         type: "direct",
@@ -125,15 +156,21 @@ async function rateChangeNow(from, to, amount) {
       if (!rateRes.ok) {
         const body = await rateRes.text().catch(() => "");
         lastErr = `CN HTTP ${rateRes.status}: ${body}`;
-        continue;
+        return 0;
       }
       const rateData = await rateRes.json().catch(() => ({}));
       const parsedOut = parseFloat(rateData?.toAmount || rateData?.estimatedAmount || 0);
-      if (parsedOut && !isNaN(parsedOut)) {
-        amountOut = parsedOut;
-        break;
-      }
+      if (parsedOut && !isNaN(parsedOut)) return parsedOut;
       lastErr = "CN: empty amount";
+      return 0;
+    };
+
+    const BATCH = 8;
+    for (let i = 0; i < networkPairs.length; i += BATCH) {
+      const chunk = networkPairs.slice(i, i + BATCH);
+      const outs = await Promise.all(chunk.map((pair) => tryPair(pair)));
+      const localMax = Math.max(0, ...outs);
+      if (localMax > amountOut) amountOut = localMax;
     }
 
     if (!amountOut || isNaN(amountOut)) {
@@ -182,27 +219,45 @@ async function rateChangeNow(from, to, amount) {
 async function rateSimpleSwap(from, to, amount) {
   if (!SS_KEY) return { provider: "SimpleSwap", error: "No API key configured", simulated: true };
 
-  const netFromDefault = SS_NETWORKS[from.toUpperCase()] || from.toLowerCase();
-  const netToDefault = SS_NETWORKS[to.toUpperCase()] || to.toLowerCase();
+  const fromLc = String(from || "").toLowerCase();
+  const toLc = String(to || "").toLowerCase();
+  const fromP = parseCnTickerForSimpleSwap(fromLc);
+  const toP = parseCnTickerForSimpleSwap(toLc);
+  const symFromU = fromP.ticker.toUpperCase();
+  const symToU = toP.ticker.toUpperCase();
+
+  const netFromDefault = fromP.network;
+  const netToDefault = toP.network;
 
   try {
-    const parseAmount = (data) => parseFloat(
-      data?.result?.amountTo ??
-      data?.result?.expectedAmount ??
-      data?.result?.toAmount ??
-      data?.result ??
-      data?.amountTo ??
-      data?.toAmount ??
-      data?.expectedAmount ??
-      data?.estimatedAmount ??
-      0
-    );
+    const parseAmount = (data) => {
+      const pick = (v) => {
+        const n = parseFloat(v);
+        return Number.isFinite(n) && n > 0 ? n : 0;
+      };
+      const candidates = [
+        data?.result?.amountTo,
+        data?.result?.expectedAmount,
+        data?.result?.toAmount,
+        typeof data?.result === "string" || typeof data?.result === "number" ? data.result : null,
+        data?.data?.amountTo,
+        data?.amountTo,
+        data?.toAmount,
+        data?.expectedAmount,
+        data?.estimatedAmount,
+      ];
+      for (const c of candidates) {
+        const n = pick(c);
+        if (n) return n;
+      }
+      return 0;
+    };
 
-    const requestEstimate = async (networkFrom, networkTo) => {
+    const requestEstimate = async (networkFrom, networkTo, tickerFrom = fromP.ticker, tickerTo = toP.ticker) => {
       const qs = new URLSearchParams({
-        tickerFrom: from.toLowerCase(),
+        tickerFrom: String(tickerFrom).toLowerCase(),
         networkFrom: networkFrom,
-        tickerTo: to.toLowerCase(),
+        tickerTo: String(tickerTo).toLowerCase(),
         networkTo: networkTo,
         amount: String(amount),
         fixed: "false",
@@ -210,42 +265,54 @@ async function rateSimpleSwap(from, to, amount) {
 
       const res = await fetch(`${SS_V3}/estimates?${qs.toString()}`, {
         headers: { "x-api-key": SS_KEY, "Accept": "application/json" },
-        signal: AbortSignal.timeout(8000),
+        signal: AbortSignal.timeout(5000),
       });
       if (!res.ok) {
         const body = await res.text().catch(() => "");
-        return { ok: false, amount: 0, err: `SS HTTP ${res.status}: ${body}` };
+        return { ok: false, amount: 0, err: `SS HTTP ${res.status}: ${body.slice(0, 200)}` };
       }
       const data = await res.json().catch(() => ({}));
       const parsed = parseAmount(data);
-      return { ok: true, amount: parsed, err: "" };
+      return { ok: true, amount: parsed, err: parsed ? "" : "SS: empty amount" };
     };
 
     const toNetworkCandidates = [
       netToDefault,
-      ...(to.toUpperCase() === "USDT" ? ["eth", "trx", "bsc", "sol", "matic", "arbitrum", "optimism"] : []),
-      ...(to.toUpperCase() === "USDC" ? ["eth", "bsc", "sol", "matic", "avax"] : []),
-      "eth", "bsc", "trx", "sol", "matic", "arbitrum", "optimism",
+      ...(symToU === "USDT" ? ["eth", "trx", "bsc", "sol", "matic", "arbitrum", "optimism", "base"] : []),
+      ...(symToU === "USDC" ? ["eth", "bsc", "sol", "matic", "cchain", "arbitrum", "optimism", "base"] : []),
+      "eth", "bsc", "trx", "sol", "matic", "arbitrum", "optimism", "base",
     ].filter((v, i, arr) => v && arr.indexOf(v) === i);
+    const fromAliases = SS_NETWORK_ALIASES[symFromU] || [];
     const fromNetworkCandidates = [
       netFromDefault,
-      ...(from.toUpperCase() === "USDT" ? ["eth", "trx", "bsc", "sol", "matic", "arbitrum", "optimism"] : []),
-      ...(from.toUpperCase() === "USDC" ? ["eth", "bsc", "sol", "matic", "avax"] : []),
+      ...fromAliases,
+      ...(symFromU === "USDT" ? ["eth", "trx", "bsc", "sol", "matic", "arbitrum", "optimism", "base"] : []),
+      ...(symFromU === "USDC" ? ["eth", "bsc", "sol", "matic", "cchain", "arbitrum", "optimism", "base"] : []),
       netToDefault,
     ].filter((v, i, arr) => v && arr.indexOf(v) === i);
 
+    const pairs = [];
+    for (const networkFrom of fromNetworkCandidates.slice(0, 8)) {
+      for (const networkTo of toNetworkCandidates.slice(0, 8)) {
+        pairs.push({ networkFrom, networkTo });
+      }
+    }
+    const cappedPairs = pairs.slice(0, 24);
+
     let amountOut = 0;
     let lastErr = "";
-    for (const networkFrom of fromNetworkCandidates) {
-      for (const networkTo of toNetworkCandidates) {
-        const out = await requestEstimate(networkFrom, networkTo);
-        if (out.ok && out.amount && !isNaN(out.amount)) {
-          amountOut = out.amount;
-          break;
-        }
-        lastErr = out.err || "SS: empty amount";
+    const prim = await requestEstimate(fromP.network, toP.network);
+    if (prim.ok && prim.amount && !isNaN(prim.amount) && prim.amount > amountOut) amountOut = prim.amount;
+    lastErr = prim.err || lastErr;
+
+    const batchSize = 12;
+    for (let i = 0; i < cappedPairs.length; i += batchSize) {
+      const batch = cappedPairs.slice(i, i + batchSize);
+      const results = await Promise.all(batch.map((p) => requestEstimate(p.networkFrom, p.networkTo)));
+      for (const out of results) {
+        if (out.ok && out.amount && !isNaN(out.amount) && out.amount > amountOut) amountOut = out.amount;
+        lastErr = out.err || lastErr || "SS: empty amount";
       }
-      if (amountOut > 0) break;
     }
 
     if (!amountOut || isNaN(amountOut)) throw new Error(lastErr || "SS: empty amount");
@@ -270,32 +337,107 @@ async function rateSimpleSwap(from, to, amount) {
 // ─────────────────────────────────────────────────────────────
 // Swapzone — returns quotaId for create call
 // ─────────────────────────────────────────────────────────────
+function parseSwapzoneAmountTo(data) {
+  const pick = (v) => {
+    const n = parseFloat(v);
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  };
+  const tryObj = (obj) => {
+    if (!obj || typeof obj !== "object") return 0;
+    const keys = [
+      "amountTo", "amount_to", "amountReceive", "amountOut", "toAmount",
+      "estimateAmountTo", "withdrawalAmount",
+    ];
+    for (const k of keys) {
+      const n = pick(obj[k]);
+      if (n) return n;
+    }
+    return 0;
+  };
+  let n = tryObj(data);
+  if (n) return n;
+  n = tryObj(data?.data);
+  if (n) return n;
+  n = tryObj(data?.data?.data);
+  if (n) return n;
+  n = tryObj(data?.transaction);
+  if (n) return n;
+  n = tryObj(data?.result);
+  if (n) return n;
+  n = tryObj(data?.rate);
+  if (n) return n;
+  if (Array.isArray(data?.offers) && data.offers[0]) {
+    n = tryObj(data.offers[0]);
+    if (n) return n;
+  }
+  return 0;
+}
+
 async function rateSwapzone(from, to, amount) {
   if (!SZ_KEY) return { provider: "Swapzone", error: "No API key configured", simulated: true };
 
   try {
-    const res = await fetch(
-      `${SZ_V1}/exchange/get-rate?from=${from.toLowerCase()}&to=${to.toLowerCase()}&amount=${amount}&rateType=all&chooseRate=best&noRefundAddress=false&apikey=${SZ_KEY}`,
-      {
-        headers: { "x-api-key": SZ_KEY },
-        signal: AbortSignal.timeout(8000),
-      }
-    );
+    const base = `${SZ_V1}/exchange/get-rate`;
+    const qs = new URLSearchParams({
+      from: from.toLowerCase(),
+      to: to.toLowerCase(),
+      amount: String(amount),
+      rateType: "all",
+      chooseRate: "best",
+      noRefundAddress: "false",
+      apikey: SZ_KEY,
+    });
+    const qsAlt = new URLSearchParams({
+      from: from.toLowerCase(),
+      to: to.toLowerCase(),
+      amountDeposit: String(amount),
+      rateType: "all",
+      chooseRate: "best",
+      noRefundAddress: "false",
+      apikey: SZ_KEY,
+    });
+
+    const fetchSz = async (url) =>
+      fetch(url, {
+        headers: { "x-api-key": SZ_KEY, Accept: "application/json" },
+        signal: AbortSignal.timeout(12000),
+      });
+
+    let res = await fetchSz(`${base}?${qs.toString()}`);
+    if (!res.ok) {
+      res = await fetchSz(`${base}?${qsAlt.toString()}`);
+    }
 
     if (!res.ok) {
       const body = await res.text();
-      throw new Error(`SZ HTTP ${res.status}: ${body}`);
+      throw new Error(`SZ HTTP ${res.status}: ${body.slice(0, 200)}`);
     }
 
-    const data = await res.json();
-    const amountOut = parseFloat(data?.amountTo ?? 0);
+    let data = await res.json();
+    let amountOut = parseSwapzoneAmountTo(data);
+    if (!amountOut || isNaN(amountOut)) {
+      const res2 = await fetchSz(`${base}?${qsAlt.toString()}`);
+      if (res2.ok) {
+        data = await res2.json();
+        amountOut = parseSwapzoneAmountTo(data);
+      }
+    }
     if (!amountOut || isNaN(amountOut)) throw new Error("SZ: empty amount");
+
+    const quotaId =
+      data?.quotaId ??
+      data?.data?.quotaId ??
+      data?.transaction?.quotaId ??
+      data?.data?.transaction?.quotaId ??
+      "";
 
     return {
       provider: "Swapzone", fromToken: from, toToken: to,
       amountIn: amount, amountOut, rate: amountOut / amount,
       estimatedTime: "5–30 min", fees: 0.4, minAmount: 0,
-      quotaId: data?.quotaId || "", simulated: false, error: null,
+      quotaId: quotaId || "",
+      simulated: false,
+      error: null,
     };
   } catch (err) {
     console.error("[SZ rate]", err.message);
@@ -363,6 +505,7 @@ export async function POST(request) {
       comparison,
       best: best || null,
       minAmount,
+      selectionMode: "max_amount_out",
       timestamp: Date.now(),
     });
 

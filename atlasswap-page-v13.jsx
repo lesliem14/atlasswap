@@ -1,5 +1,6 @@
 "use client";
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { getAddressValidatorKeyForTicker } from "@/app/lib/cnTickerMap.js";
 
 // Public inbox for the Contacts modal (service issues). Replace with your real address.
 const SUPPORT_EMAIL = "support@atlasswap.io";
@@ -120,8 +121,26 @@ const COINS = [
   { symbol: "DGB",   name: "DigiByte",         color: "#0066CC", bg: "#001020", icon: "Ð"  },
 ];
 
-// Remove duplicate IMX entry
-const COINS_DEDUPED = COINS.filter((c, i, arr) => arr.findIndex(x => x.symbol === c.symbol) === i);
+// ── Crypto logo CDN (atomiclabs) — coins not in set use letter fallback via CoinLogo ──
+const COIN_ICON_CDN_BASE =
+  "https://cdn.jsdelivr.net/gh/atomiclabs/cryptocurrency-icons@1a63530be6e374711a8554f31b17e4cb92c25fa/128/color";
+
+/** Tickers with no reliable asset in the library — logoUrl null → CoinLogo letter fallback */
+const NO_CDN_LOGO = new Set([
+  "TON", "ARB", "OP", "INJ", "SUI", "APT", "NEAR", "FTM", "ALGO", "PEPE", "FLOKI", "BONK", "WIF", "OSMO", "SEI", "EGLD", "STX", "STRK", "MANTA", "AAVE", "MKR", "SNX", "LDO", "COMP", "CRV", "CAKE", "1INCH", "SAND", "MANA", "AXS", "ENJ", "GALA", "FET", "OCEAN", "RNDR", "WLD", "GRT", "LRC", "CHZ", "BAT", "IOTA", "THETA", "EOS", "XTZ", "XLM", "VET", "HBAR", "ICP", "ZEC", "DASH", "XVG", "KAVA", "JUNO", "STARS", "BUSD", "TUSD", "DAI", "ZIL", "WAVES", "QTUM", "KCS", "ROSE", "CFX", "KSM", "ZEN", "DCR", "RVN", "DGB", "SC", "XEM", "OKB", "HT", "CRO",
+]);
+
+function logoUrlForSymbol(symbol) {
+  if (NO_CDN_LOGO.has(symbol)) return null;
+  const file = symbol === "1INCH" ? "1inch" : symbol.toLowerCase();
+  return `${COIN_ICON_CDN_BASE}/${file}.png`;
+}
+
+// Remove duplicate IMX entry; attach logoUrl, drop legacy text icon
+const COINS_DEDUPED = COINS.filter((c, i, arr) => arr.findIndex((x) => x.symbol === c.symbol) === i).map((c) => {
+  const { icon: _icon, ...rest } = c;
+  return { ...rest, logoUrl: logoUrlForSymbol(c.symbol) };
+});
 
 const BASE_RATES = {
   BTC:87500, ETH:3350,  USDT:1,    BNB:590,   SOL:178,
@@ -149,6 +168,19 @@ const BASE_RATES = {
 
 // Use deduped coins throughout the app
 const COINS_LIST = COINS_DEDUPED;
+
+/** Map a ChangeNOW ticker (e.g. usdcarb, ethbase) to metadata from COINS_LIST for colors / fallbacks. */
+function baseCoinMetaForTicker(ticker) {
+  const x = String(ticker || "").toLowerCase();
+  return COINS_LIST.find((c) => x === c.symbol.toLowerCase() || x.startsWith(c.symbol.toLowerCase())) || null;
+}
+
+function tickerUsdFallback(ticker) {
+  const c = baseCoinMetaForTicker(ticker);
+  if (!c) return 1;
+  if (["USDT", "USDC", "DAI", "BUSD", "TUSD"].includes(c.symbol)) return 1;
+  return BASE_RATES[c.symbol] ?? 1;
+}
 
 // ═══════════════════════════════════════════════════════════════
 // API LAYER — All provider calls go through Next.js server routes.
@@ -570,14 +602,15 @@ const ADDRESS_HINTS = {
   DGB:"DigiByte address starts with D",
 };
 
-function validateAddress(coin, address) {
-  if (!address || !address.trim()) return { valid: false, hint: `Please enter your ${coin} wallet address` };
-  const validator = ADDRESS_VALIDATORS[coin];
-  if (!validator) return { valid: true }; // unknown coin — let API decide
+function validateAddress(coinTicker, address) {
+  if (!address || !address.trim()) return { valid: false, hint: "Please enter your destination wallet address" };
+  const key = getAddressValidatorKeyForTicker(coinTicker);
+  const validator = ADDRESS_VALIDATORS[key];
+  if (!validator) return { valid: true }; // unknown — let API decide
   const valid = validator(address.trim());
   return {
     valid,
-    hint: valid ? "" : (ADDRESS_HINTS[coin] || `Invalid ${coin} address format`),
+    hint: valid ? "" : (ADDRESS_HINTS[key] || "Invalid address format for this asset network"),
   };
 }
 
@@ -588,8 +621,10 @@ function cleanErrorMessage(raw, fromCoin, toCoin, minAmount) {
   if (!raw) return "Exchange failed. Please try again.";
   const msg = raw.toLowerCase();
 
-  if (msg.includes("not_valid_address") || msg.includes("not valid") || msg.includes("invalid address"))
-    return `Invalid ${toCoin} destination address. ${ADDRESS_HINTS[toCoin] || `Please check your ${toCoin} wallet address format.`}`;
+  if (msg.includes("not_valid_address") || msg.includes("not valid") || msg.includes("invalid address")) {
+    const hk = getAddressValidatorKeyForTicker(toCoin);
+    return `Invalid destination address. ${ADDRESS_HINTS[hk] || "Please check your wallet address format for this network."}`;
+  }
 
   if (msg.includes("real_min:")) {
     const m = raw.match(/REAL_MIN:([\d.]+)/);
@@ -639,19 +674,92 @@ function cleanErrorMessage(raw, fromCoin, toCoin, minAmount) {
 
 
 
+function symbolPillStyle(coin) {
+  return {
+    background: coin.color + "33",
+    color: coin.color,
+    fontSize: "10px",
+    fontWeight: 700,
+    padding: "2px 6px",
+    borderRadius: "6px",
+    letterSpacing: "0.05em",
+    flexShrink: 0,
+  };
+}
+
+function CoinLogo({ coin, size = 32 }) {
+  const [imgError, setImgError] = useState(false);
+  const c = coin || COINS_LIST[0];
+
+  if (!c?.logoUrl || imgError) {
+    return (
+      <div
+        style={{
+          width: size,
+          height: size,
+          borderRadius: "50%",
+          background: c.color + "22",
+          border: "1.5px solid " + c.color + "55",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          fontSize: size * 0.4 + "px",
+          fontWeight: 700,
+          color: c.color,
+          flexShrink: 0,
+        }}
+      >
+        {c.symbol.charAt(0)}
+      </div>
+    );
+  }
+
+  return (
+    <div
+      style={{
+        width: size,
+        height: size,
+        borderRadius: "50%",
+        background: "#fff",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        overflow: "hidden",
+        flexShrink: 0,
+        boxShadow: "0 1px 4px rgba(0,0,0,0.15)",
+      }}
+    >
+      <img
+        src={c.logoUrl}
+        alt={c.symbol}
+        width={size * 0.82}
+        height={size * 0.82}
+        onError={() => setImgError(true)}
+        style={{ display: "block", objectFit: "contain" }}
+      />
+    </div>
+  );
+}
+
 // ═══════════════════════════════════════════════════════════════
 // COIN SELECTOR — dropdown anchored inside card (no overflow issues)
 // ═══════════════════════════════════════════════════════════════
-function CoinSelector({ selected, onChange, exclude }) {
+function CoinSelector({ selected, onChange, exclude, assets }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const wrapRef = useRef(null);
-  const coin = COINS_LIST.find(c => c.symbol === selected) || COINS_LIST[0];
 
-  const filtered = COINS_LIST.filter(c =>
-    c.symbol !== exclude &&
-    (c.symbol.toLowerCase().includes(query.toLowerCase()) ||
-     c.name.toLowerCase().includes(query.toLowerCase()))
+  const rows = assets && assets.length
+    ? assets
+    : COINS_LIST.map((c) => ({ ticker: c.symbol.toLowerCase(), name: `${c.name} (${c.symbol})` }));
+
+  const coin = baseCoinMetaForTicker(selected) || COINS_LIST[0];
+  const selectedRow = rows.find((r) => r.ticker === selected);
+
+  const filtered = rows.filter((r) =>
+    r.ticker !== exclude &&
+    (r.ticker.toLowerCase().includes(query.toLowerCase()) ||
+     (r.name || "").toLowerCase().includes(query.toLowerCase()))
   );
 
   // Close on outside click
@@ -686,13 +794,27 @@ function CoinSelector({ selected, onChange, exclude }) {
           userSelect: "none", WebkitUserSelect: "none",
         }}
       >
-        <div style={{
-          width: 28, height: 28, borderRadius: "50%",
-          background: coin.bg, border: `1.5px solid ${coin.color}`,
-          display: "flex", alignItems: "center", justifyContent: "center",
-          fontSize: "12px", color: coin.color, fontWeight: 800, flexShrink: 0,
-        }}>{coin.icon}</div>
-        <span style={{ letterSpacing: "0.04em" }}>{coin.symbol}</span>
+        <CoinLogo coin={coin} size={28} />
+        <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: "4px" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap", minWidth: 0 }}>
+            <span
+              style={{
+                letterSpacing: "0.04em",
+                textAlign: "left",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+                flex: "1 1 60px",
+                minWidth: 0,
+                fontSize: "13px",
+              }}
+              title={selectedRow?.name || selected}
+            >
+              {selectedRow?.name || selected.toUpperCase()}
+            </span>
+            <span style={symbolPillStyle(coin)}>{coin.symbol}</span>
+          </div>
+        </div>
         <span style={{
           marginLeft: "auto", fontSize: "9px", opacity: 0.4,
           transform: open ? "rotate(180deg)" : "none", transition: "transform 0.2s",
@@ -704,8 +826,8 @@ function CoinSelector({ selected, onChange, exclude }) {
           position: "absolute",
           top: "calc(100% + 6px)",
           right: 0,            // anchors to right edge of button
-          minWidth: "200px",
-          width: "220px",
+          minWidth: "260px",
+          width: "min(92vw, 320px)",
           background: "#0C1220",
           border: "1px solid rgba(255,255,255,0.14)",
           borderRadius: "16px",
@@ -734,35 +856,34 @@ function CoinSelector({ selected, onChange, exclude }) {
                 No coins found
               </div>
             )}
-            {filtered.map(c => (
-              <button key={c.symbol}
-                onMouseDown={e => { e.preventDefault(); onChange(c.symbol); setOpen(false); setQuery(""); }}
+            {filtered.map((r) => {
+              const meta = baseCoinMetaForTicker(r.ticker) || COINS_LIST[0];
+              return (
+              <button key={r.ticker}
+                onMouseDown={e => { e.preventDefault(); onChange(r.ticker); setOpen(false); setQuery(""); }}
                 style={{
                   width: "100%", display: "flex", alignItems: "center", gap: "10px",
                   padding: "9px 14px",
-                  background: selected === c.symbol ? "rgba(0,229,160,0.08)" : "transparent",
+                  background: selected === r.ticker ? "rgba(0,229,160,0.08)" : "transparent",
                   border: "none", cursor: "pointer", color: "#fff",
                   fontFamily: "inherit", fontSize: "13px", textAlign: "left",
                   transition: "background 0.1s",
                 }}
                 onMouseEnter={e => e.currentTarget.style.background = "rgba(255,255,255,0.07)"}
-                onMouseLeave={e => e.currentTarget.style.background = selected === c.symbol ? "rgba(0,229,160,0.08)" : "transparent"}
+                onMouseLeave={e => e.currentTarget.style.background = selected === r.ticker ? "rgba(0,229,160,0.08)" : "transparent"}
               >
-                <div style={{
-                  width: 26, height: 26, borderRadius: "50%", background: c.bg,
-                  border: `1.5px solid ${c.color}`, display: "flex", alignItems: "center",
-                  justifyContent: "center", fontSize: "10px", color: c.color,
-                  fontWeight: 800, flexShrink: 0,
-                }}>{c.icon}</div>
-                <div>
-                  <div style={{ fontWeight: 700, fontSize: "13px" }}>{c.symbol}</div>
-                  <div style={{ fontSize: "10px", opacity: 0.4 }}>{c.name}</div>
+                <CoinLogo coin={meta} size={26} />
+                <div style={{ minWidth: 0, flex: 1 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                    <span style={{ fontWeight: 700, fontSize: "12px", lineHeight: 1.35 }}>{r.name || r.ticker.toUpperCase()}</span>
+                    <span style={symbolPillStyle(meta)}>{meta.symbol}</span>
+                  </div>
                 </div>
-                {selected === c.symbol && (
+                {selected === r.ticker && (
                   <span style={{ marginLeft: "auto", color: "#00E5A0", fontSize: "12px" }}>✓</span>
                 )}
               </button>
-            ))}
+            );})}
           </div>
         </div>
       )}
@@ -851,7 +972,7 @@ function BackendPanel({ comparison, fromCoin, toCoin, sendAmt, onClose }) {
             COMMISSION BREAKDOWN
           </div>
           {[
-            ["Your commission (0.4%)", `${(parseFloat(sendAmt || 0) * (BASE_RATES[fromCoin] || 0) * 0.004).toFixed(4)} USD`],
+            ["Your commission (0.4%)", `${(parseFloat(sendAmt || 0) * (tickerPrices[fromCoin] || tickerUsdFallback(fromCoin) || 0) * 0.004).toFixed(4)} USD`],
             ["Best provider routing", comparison?.[0]?.provider || "ChangeNOW"],
             ["Rate advantage vs worst", comparison?.length >= 2 ? `+${(((comparison[0]?.rate - comparison[comparison.length-1]?.rate) / comparison[comparison.length-1]?.rate) * 100).toFixed(2)}%` : "N/A"],
             ["API keys status", "Configure in .env.local"],
@@ -882,8 +1003,9 @@ function BackendPanel({ comparison, fromCoin, toCoin, sendAmt, onClose }) {
 // ═══════════════════════════════════════════════════════════════
 export default function AtlasSwapApp() {
   const [tab, setTab]               = useState("exchange");
-  const [fromCoin, setFromCoin]     = useState("BTC");
-  const [toCoin, setToCoin]         = useState("ETH");
+  const [fromCoin, setFromCoin]     = useState("btc");
+  const [toCoin, setToCoin]         = useState("eth");
+  const [currencyOptions, setCurrencyOptions] = useState(null);
   const [sendAmt, setSendAmt]       = useState("0.1");
   const [receiveAmt, setReceiveAmt] = useState("");
   const [destAddr, setDestAddr]     = useState("");
@@ -905,6 +1027,33 @@ export default function AtlasSwapApp() {
   const rateTimer = useRef(null);
   const tickerTimer = useRef(null);
   const prevPrices = useRef({...BASE_RATES}); // track previous cycle for change %
+
+  const assetRows = useMemo(() => {
+    if (currencyOptions && currencyOptions.length) {
+      const pref = COINS_LIST.map((c) => c.symbol.toLowerCase());
+      const rows = currencyOptions.filter((c) => {
+        const t = c.ticker;
+        if (c.featured) return true;
+        return pref.some((p) => t === p || t.startsWith(p));
+      });
+      return rows.slice(0, 1200).map((c) => ({ ticker: c.ticker, name: c.name || c.ticker }));
+    }
+    return COINS_LIST.map((c) => ({ ticker: c.symbol.toLowerCase(), name: `${c.name} (${c.symbol})` }));
+  }, [currencyOptions]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await fetchWithTimeout("/api/swap/currencies", {}, 25000);
+        if (!r.ok) return;
+        const data = await r.json();
+        if (!data.ok || !Array.isArray(data.currencies)) return;
+        if (!cancelled) setCurrencyOptions(data.currencies);
+      } catch (_) { /* keep built-in list */ }
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
   // ── LIVE PRICE ENGINE ──────────────────────────────────────────────────────
   // Derives USD prices directly from ChangeNOW swap API rates (not CoinGecko).
@@ -962,11 +1111,6 @@ export default function AtlasSwapApp() {
     return () => clearInterval(tickerTimer.current);
   }, [fetchLivePrices]);
 
-  // ── Re-fetch ticker instantly when fromCoin changes ──
-  useEffect(() => {
-    fetchLivePrices();
-  }, [fromCoin]);
-
   // ── Keyboard shortcut: Ctrl+Shift+A opens backend panel ──
   useEffect(() => {
     const handler = e => {
@@ -1023,8 +1167,8 @@ export default function AtlasSwapApp() {
       // Validated with ±20% sanity check against previous value.
       if (best && best.rate > 0 && !best.simulated) {
         setTickerPrices(prev => {
-          const toUSD   = prev[to]   || BASE_RATES[to]   || 1;
-          const fromUSD = prev[from] || BASE_RATES[from] || 1;
+          const toUSD   = prev[to]   || tickerUsdFallback(to);
+          const fromUSD = prev[from] || tickerUsdFallback(from);
           const implied = best.rate * toUSD;
           const ok = fromUSD > 0 && Math.abs(implied - fromUSD) / fromUSD < 0.20;
           return ok ? { ...prev, [from]: implied } : prev;
@@ -1034,7 +1178,7 @@ export default function AtlasSwapApp() {
       setLastRefreshed(new Date());
     } catch (err) {
       // All providers failed — show BASE_RATES fallback + user message
-      const fallback = ((parsed * (BASE_RATES[from] || 1)) / (BASE_RATES[to] || 1)) * 0.996;
+      const fallback = ((parsed * tickerUsdFallback(from)) / tickerUsdFallback(to)) * 0.996;
       setReceiveAmt(fallback.toFixed(6));
       setFetchError("Live rates temporarily unavailable — showing estimated rate. Refresh to retry.");
     } finally {
@@ -1150,9 +1294,10 @@ export default function AtlasSwapApp() {
       // Address error — send back to form so user can fix address
       const rawLower = raw.toLowerCase();
       if (rawLower.includes("not_valid_address") || rawLower.includes("not valid") || rawLower.includes("invalid address")) {
-        const hint = ADDRESS_HINTS[toCoin] || `Please check your ${toCoin} address format.`;
+        const hk = getAddressValidatorKeyForTicker(toCoin);
+        const hint = ADDRESS_HINTS[hk] || "Please check your address format for this network.";
         setAddressError(hint);
-        setExchangeError(`Invalid ${toCoin} address. ${hint}`);
+        setExchangeError(`Invalid address. ${hint}`);
         setStep("form");
         return;
       }
@@ -1162,8 +1307,8 @@ export default function AtlasSwapApp() {
     }
   };
 
-  const fromData = COINS_LIST.find(c => c.symbol === fromCoin) || COINS_LIST[0];
-  const toData   = COINS_LIST.find(c => c.symbol === toCoin) || COINS_LIST[1];
+  const fromData = baseCoinMetaForTicker(fromCoin) || COINS_LIST[0];
+  const toData   = baseCoinMetaForTicker(toCoin) || COINS_LIST[1];
 
   // ── Ticker data with live fluctuation ──
   const tickerCoins = COINS_LIST.slice(0, 16);
@@ -1379,7 +1524,8 @@ export default function AtlasSwapApp() {
                 padding: "0 28px", fontSize: "11px", fontWeight: 500,
                 borderRight: "1px solid rgba(255,255,255,0.04)",
               }}>
-                <span style={{ color: c.color, fontWeight: 700, letterSpacing: "0.04em" }}>{c.symbol}</span>
+                <CoinLogo coin={c} size={24} />
+                <span style={symbolPillStyle(c)}>{c.symbol}</span>
                 <span style={{ color: "rgba(240,244,255,0.55)" }}>
                   ${price < 0.01 ? price.toExponential(2) : price < 1 ? price.toFixed(4) : price.toLocaleString(undefined, { maximumFractionDigits: 2 })}
                 </span>
@@ -1669,14 +1815,14 @@ export default function AtlasSwapApp() {
                         minWidth: 0, outline: "none",
                       }}
                     />
-                    <CoinSelector selected={fromCoin} onChange={c => { setFromCoin(c); setExchangeError(""); }} exclude={toCoin} />
+                    <CoinSelector selected={fromCoin} onChange={c => { setFromCoin(c); setExchangeError(""); }} exclude={toCoin} assets={assetRows} />
                   </div>
                   <div style={{
                     fontSize: "11px", marginTop: "6px", paddingLeft: "4px",
                     display: "flex", justifyContent: "space-between", alignItems: "center",
                   }}>
                     <span style={{ color: "rgba(240,244,255,0.3)" }}>
-                      ≈ ${((parseFloat(sendAmt) || 0) * (tickerPrices[fromCoin] || 0)).toLocaleString(undefined, { maximumFractionDigits: 2 })} USD
+                      ≈ ${((parseFloat(sendAmt) || 0) * (tickerPrices[fromCoin] || tickerUsdFallback(fromCoin) || 0)).toLocaleString(undefined, { maximumFractionDigits: 2 })} USD
                     </span>
                     {isBelowMin
                       ? <span style={{ color: "#FF5A72", fontWeight: 600 }}>
@@ -1742,7 +1888,7 @@ export default function AtlasSwapApp() {
                     }}>
                       {receiveAmt || "0.000000"}
                     </div>
-                    <CoinSelector selected={toCoin} onChange={setToCoin} exclude={fromCoin} />
+                    <CoinSelector selected={toCoin} onChange={setToCoin} exclude={fromCoin} assets={assetRows} />
                   </div>
                   <div style={{
                     fontSize: "11px", color: "rgba(240,244,255,0.3)",
@@ -1753,8 +1899,8 @@ export default function AtlasSwapApp() {
                     <span>
                       1 {fromCoin} ≈ {
                         (() => {
-                          const fromUSD = tickerPrices[fromCoin] || BASE_RATES[fromCoin] || 1;
-                          const toUSD   = tickerPrices[toCoin]   || BASE_RATES[toCoin]   || 1;
+                          const fromUSD = tickerPrices[fromCoin] || tickerUsdFallback(fromCoin) || 1;
+                          const toUSD   = tickerPrices[toCoin]   || tickerUsdFallback(toCoin)   || 1;
                           return toUSD > 0 ? ((fromUSD / toUSD) * 0.996).toFixed(6) : "—";
                         })()
                       } {toCoin}
@@ -1780,6 +1926,21 @@ export default function AtlasSwapApp() {
                       )}
                     </span>
                   </div>
+                </div>
+
+                <div style={{
+                  fontSize: "10px",
+                  color: "rgba(240,244,255,0.3)",
+                  lineHeight: 1.55,
+                  marginBottom: "12px",
+                  padding: "10px 12px",
+                  background: "rgba(255,255,255,0.03)",
+                  border: "1px solid rgba(255,255,255,0.06)",
+                  borderRadius: "10px",
+                }}>
+                  <strong style={{ color: "rgba(0,229,160,0.85)" }}>Networks:</strong>{" "}
+                  Select the exact asset row (e.g. USD Coin on Arbitrum One) so it matches the chain you send from and the address you receive on.
+                  Quotes use the provider that returns the <strong>highest amount out</strong> for this pair. Depositing on the wrong network can mean permanent loss of funds.
                 </div>
 
                 {/* ── ALL-PROVIDER QUOTE COMPARISON ─────────────────────── */}
@@ -2044,19 +2205,27 @@ export default function AtlasSwapApp() {
               }}>Confirm Exchange</div>
 
               {[
-                ["You Send",       `${sendAmt} ${fromCoin}`],
-                ["You Receive",    `~${receiveAmt} ${toCoin}`],
-                ["Best Provider",  bestProvider],
-                ["Destination",    destAddr.length > 20 ? destAddr.slice(0,14) + "…" + destAddr.slice(-8) : destAddr],
-                ["Service Fee",    "0.4% (included in rate)"],
-                ["Estimated Time", "5 – 20 minutes"],
-              ].map(([k, v]) => (
+                ["You Send", `${sendAmt} ${fromCoin}`, fromData],
+                ["You Receive", `~${receiveAmt} ${toCoin}`, toData],
+                ["Best Provider", bestProvider, null],
+                ["Destination", destAddr.length > 20 ? destAddr.slice(0, 14) + "…" + destAddr.slice(-8) : destAddr, null],
+                ["Service Fee", "0.4% (included in rate)", null],
+                ["Estimated Time", "5 – 20 minutes", null],
+              ].map(([k, v, logoCoin]) => (
                 <div key={k} style={{
                   display: "flex", justifyContent: "space-between", alignItems: "center",
                   padding: "11px 0", borderBottom: "1px solid rgba(255,255,255,0.05)",
                 }}>
                   <span style={{ fontSize: "13px", color: "rgba(240,244,255,0.4)" }}>{k}</span>
-                  <span style={{ fontSize: "13px", fontWeight: 600, color: k === "Best Provider" ? "#00E5A0" : "#fff" }}>{v}</span>
+                  <span style={{
+                    fontSize: "13px", fontWeight: 600,
+                    color: k === "Best Provider" ? "#00E5A0" : "#fff",
+                    display: "flex", alignItems: "center", gap: "10px",
+                    justifyContent: "flex-end", textAlign: "right",
+                  }}>
+                    {logoCoin ? <CoinLogo coin={logoCoin} size={40} /> : null}
+                    <span>{v}</span>
+                  </span>
                 </div>
               ))}
 

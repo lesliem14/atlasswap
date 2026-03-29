@@ -1,3 +1,5 @@
+import { parseCnTickerForSimpleSwap } from "../../../lib/cnTickerMap.js";
+
 // ═══════════════════════════════════════════════════════════════
 // FILE: atlasswap/app/api/swap/create/route.js
 //
@@ -92,8 +94,8 @@ async function createChangeNow(from, to, amount, address) {
 async function createSimpleSwap(from, to, amount, address) {
   if (!SS_KEY) throw new Error("SimpleSwap API key not configured");
 
-  const netFrom = SS_NETWORKS[from.toUpperCase()] || from.toLowerCase();
-  const netTo   = SS_NETWORKS[to.toUpperCase()]   || to.toLowerCase();
+  const fp = parseCnTickerForSimpleSwap(String(from || "").toLowerCase());
+  const tp = parseCnTickerForSimpleSwap(String(to || "").toLowerCase());
 
   const res = await fetch(`${SS_V3}/exchanges`, {
     method:  "POST",
@@ -103,10 +105,10 @@ async function createSimpleSwap(from, to, amount, address) {
       "Accept":       "application/json",
     },
     body: JSON.stringify({
-      tickerFrom:  from.toLowerCase(),
-      networkFrom: netFrom,
-      tickerTo:    to.toLowerCase(),
-      networkTo:   netTo,
+      tickerFrom:  fp.ticker.toLowerCase(),
+      networkFrom: fp.network,
+      tickerTo:    tp.ticker.toLowerCase(),
+      networkTo:   tp.network,
       amount:      String(amount),
       fixed:       false,
       addressTo:   address.trim(),
