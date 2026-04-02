@@ -127,7 +127,7 @@ const COIN_ICON_CDN_BASE =
 
 /** Tickers with no reliable asset in the library — logoUrl null → CoinLogo letter fallback */
 const NO_CDN_LOGO = new Set([
-  "TON", "ARB", "OP", "INJ", "SUI", "APT", "NEAR", "FTM", "ALGO", "PEPE", "FLOKI", "BONK", "WIF", "OSMO", "SEI", "EGLD", "STX", "STRK", "MANTA", "AAVE", "MKR", "SNX", "LDO", "COMP", "CRV", "CAKE", "1INCH", "SAND", "MANA", "AXS", "ENJ", "GALA", "FET", "OCEAN", "RNDR", "WLD", "GRT", "LRC", "CHZ", "BAT", "IOTA", "THETA", "EOS", "XTZ", "XLM", "VET", "HBAR", "ICP", "ZEC", "DASH", "XVG", "KAVA", "JUNO", "STARS", "BUSD", "TUSD", "DAI", "ZIL", "WAVES", "QTUM", "KCS", "ROSE", "CFX", "KSM", "ZEN", "DCR", "RVN", "DGB", "SC", "XEM", "OKB", "HT", "CRO",
+  "TON", "ARB", "OP", "INJ", "SUI", "APT", "NEAR", "FTM", "ALGO", "PEPE", "FLOKI", "BONK", "WIF", "OSMO", "SEI", "EGLD", "STX", "STRK", "MANTA", "AAVE", "MKR", "SNX", "LDO", "COMP", "CRV", "CAKE", "SAND", "MANA", "AXS", "ENJ", "GALA", "FET", "OCEAN", "RNDR", "WLD", "GRT", "LRC", "CHZ", "BAT", "IOTA", "THETA", "EOS", "XTZ", "XLM", "VET", "HBAR", "ICP", "ZEC", "DASH", "XVG", "KAVA", "JUNO", "STARS", "BUSD", "TUSD", "DAI", "ZIL", "WAVES", "QTUM", "KCS", "ROSE", "CFX", "KSM", "ZEN", "DCR", "RVN", "DGB", "SC", "XEM", "OKB", "HT", "CRO",
 ]);
 
 function logoUrlForSymbol(symbol) {
@@ -794,7 +794,7 @@ function CoinSelector({ selected, onChange, exclude, assets }) {
           userSelect: "none", WebkitUserSelect: "none",
         }}
       >
-        <CoinLogo coin={coin} size={28} />
+        <CoinLogo coin={coin} size={32} />
         <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: "4px" }}>
           <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap", minWidth: 0 }}>
             <span
@@ -872,7 +872,7 @@ function CoinSelector({ selected, onChange, exclude, assets }) {
                 onMouseEnter={e => e.currentTarget.style.background = "rgba(255,255,255,0.07)"}
                 onMouseLeave={e => e.currentTarget.style.background = selected === r.ticker ? "rgba(0,229,160,0.08)" : "transparent"}
               >
-                <CoinLogo coin={meta} size={26} />
+                <CoinLogo coin={meta} size={32} />
                 <div style={{ minWidth: 0, flex: 1 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
                     <span style={{ fontWeight: 700, fontSize: "12px", lineHeight: 1.35 }}>{r.name || r.ticker.toUpperCase()}</span>
