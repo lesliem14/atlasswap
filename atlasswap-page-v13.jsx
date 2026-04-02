@@ -1007,10 +1007,8 @@ export default function AtlasSwapApp() {
   const [showWallet, setShowWallet] = useState(false);
   const [connectedWallet, setConnectedWallet] = useState(null);
   const [tickerPrices, setTickerPrices] = useState({...BASE_RATES});
-  const [tickerChanges, setTickerChanges] = useState({});
   const rateTimer = useRef(null);
   const tickerTimer = useRef(null);
-  const prevPrices = useRef({...BASE_RATES}); // track previous cycle for change %
 
   const assetRows = useMemo(() => {
     if (currencyOptions && currencyOptions.length) {
@@ -1076,16 +1074,7 @@ export default function AtlasSwapApp() {
       }
     });
 
-    // Compute session-relative change vs previous cycle
-    const newChanges = {};
-    Object.entries(newPrices).forEach(([sym, price]) => {
-      const prev = prevPrices.current[sym] || BASE_RATES[sym] || price;
-      if (prev && prev > 0) newChanges[sym] = ((price - prev) / prev) * 100;
-    });
-    prevPrices.current = { ...prevPrices.current, ...newPrices };
-
     setTickerPrices(prev => ({ ...prev, ...newPrices }));
-    setTickerChanges(prev => ({ ...prev, ...newChanges }));
   }, []);
 
   // ── Auto-refresh ticker on mount + every REFRESH_INTERVAL ──
@@ -1500,8 +1489,6 @@ export default function AtlasSwapApp() {
         }}>
           {[...tickerCoins, ...tickerCoins].map((c, i) => {
             const price = tickerPrices[c.symbol] || BASE_RATES[c.symbol] || 0;
-            const change = tickerChanges[c.symbol] ?? ((tickerPrices[c.symbol] - BASE_RATES[c.symbol]) / BASE_RATES[c.symbol] * 100);
-            const isUp = change >= 0;
             return (
               <span key={i} style={{
                 display: "inline-flex", alignItems: "center", gap: "7px",
@@ -1512,9 +1499,6 @@ export default function AtlasSwapApp() {
                 <span style={symbolPillStyle(c)}>{c.symbol}</span>
                 <span style={{ color: "rgba(240,244,255,0.55)" }}>
                   ${price < 0.01 ? price.toExponential(2) : price < 1 ? price.toFixed(4) : price.toLocaleString(undefined, { maximumFractionDigits: 2 })}
-                </span>
-                <span style={{ color: isUp ? "#00E5A0" : "#FF5A72", fontSize: "10px", fontWeight: 600 }}>
-                  {isUp ? "▲" : "▼"}
                 </span>
               </span>
             );
