@@ -1,10 +1,10 @@
 /**
  * ChangeNOW uses composite tickers (e.g. usdcarb, usdttrc20, ethbase).
- * SimpleSwap expects { ticker, network } — these helpers bridge the two.
+ * Exolix expects { ticker, network } — these helpers bridge the two.
  */
 
-/** Suffix after stablecoin / eth prefix → SimpleSwap network id */
-const SUFFIX_TO_SS = {
+/** Suffix after stablecoin / eth prefix → Exolix network id */
+const SUFFIX_TO_EX = {
   "": "eth",
   erc20: "eth",
   trc20: "trx",
@@ -30,7 +30,7 @@ const SUFFIX_TO_SS = {
 
 const STABLE_PREFIXES = ["usdt", "usdc", "dai", "busd", "tusd"];
 
-/** Top-level coins: ticker → SimpleSwap network */
+/** Top-level coins: ticker → Exolix network */
 const SIMPLE_TICKER_NET = {
   btc: "btc",
   ltc: "ltc",
@@ -63,7 +63,7 @@ const SIMPLE_TICKER_NET = {
  * @param {string} ticker ChangeNOW currency ticker (lowercase)
  * @returns {{ ticker: string, network: string }}
  */
-export function parseCnTickerForSimpleSwap(ticker) {
+export function parseCnTickerForExolix(ticker) {
   const t = String(ticker || "").toLowerCase().trim();
   if (!t) return { ticker: "btc", network: "btc" };
 
@@ -74,7 +74,7 @@ export function parseCnTickerForSimpleSwap(ticker) {
     }
     if (t.startsWith(pre) && t.length > pre.length) {
       const suf = t.slice(pre.length);
-      const net = SUFFIX_TO_SS[suf] ?? "eth";
+      const net = SUFFIX_TO_EX[suf] ?? "eth";
       return { ticker: pre, network: net };
     }
   }
@@ -92,7 +92,7 @@ export function parseCnTickerForSimpleSwap(ticker) {
       zksync: "zksync",
       lna: "linea",
     };
-    const net = map[suf] ?? SUFFIX_TO_SS[suf] ?? "eth";
+    const net = map[suf] ?? SUFFIX_TO_EX[suf] ?? "eth";
     return { ticker: "eth", network: net };
   }
 

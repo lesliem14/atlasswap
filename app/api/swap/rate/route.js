@@ -1,70 +1,25 @@
-import { parseCnTickerForSimpleSwap } from "../../../lib/cnTickerMap.js";
+export const runtime = "nodejs";
 
-// ═══════════════════════════════════════════════════════════════
-// FILE: atlasswap/app/api/swap/rate/route.js
-//
-// PURPOSE: Server-side rate aggregation proxy.
-//   - Browser calls POST /api/swap/rate (your own server)
-//   - Your server calls ChangeNOW, SimpleSwap, Swapzone
-//   - API keys NEVER reach the browser
-//   - Solves: SimpleSwap 401, ChangeNOW 400, CORS errors
-//
-// SECURITY:
-//   - Keys stored as plain env vars (no NEXT_PUBLIC_ prefix)
-//   - Keys only accessible server-side
-//   - Request validated before forwarding
-//
-// VERCEL ENV VARS NEEDED (no NEXT_PUBLIC_ prefix):
-//   CHANGENOW_API_KEY
-//   SIMPLESWAP_API_KEY
-//   SWAPZONE_API_KEY
-// ═══════════════════════════════════════════════════════════════
+const CN_KEY = process.env.CHANGENOW_API_KEY || process.env.NEXT_PUBLIC_CHANGENOW_API_KEY || "";
+const EXOLIX_KEY = process.env.EXOLIX_API_KEY || process.env.NEXT_PUBLIC_EXOLIX_API_KEY || "";
+const SZ_KEY = process.env.SWAPZONE_API_KEY || process.env.NEXT_PUBLIC_SWAPZONE_API_KEY || "";
 
-export const runtime = "nodejs"; // nodejs for full fetch support + better error logs
-
-// ── Keys — server-side only, never sent to browser ────────────
-// Supports both old NEXT_PUBLIC_ names and new server-only names
-// so you don't need to add new Vercel vars if old ones exist.
-const CN_KEY = process.env.CHANGENOW_API_KEY  || process.env.NEXT_PUBLIC_CHANGENOW_API_KEY  || "";
-const SS_KEY = process.env.SIMPLESWAP_API_KEY || process.env.NEXT_PUBLIC_SIMPLESWAP_API_KEY || "";
-const SZ_KEY = process.env.SWAPZONE_API_KEY   || process.env.NEXT_PUBLIC_SWAPZONE_API_KEY   || "";
-
-// ── API base URLs ──────────────────────────────────────────────
 const CN_V1 = "https://api.changenow.io/v1";
 const CN_V2 = "https://api.changenow.io/v2";
-const SS_V3 = "https://api.simpleswap.io/v3";
+const EXOLIX_V2 = "https://exolix.com/api/v2";
 const SZ_V1 = "https://api.swapzone.io/v1";
 
-// ── SimpleSwap V3 network mapping ─────────────────────────────
-const SS_NETWORKS = {
-  BTC:"btc",    ETH:"eth",      USDT:"eth",    BNB:"bsc",     SOL:"sol",
-  USDC:"eth",   XRP:"xrp",      DOGE:"doge",   ADA:"ada",     TRX:"trx",
-  AVAX:"avax",  TON:"ton",      DOT:"dot",     MATIC:"matic", LTC:"ltc",
-  BCH:"bch",    ATOM:"atom",    NEAR:"near",   FTM:"ftm",     ALGO:"algo",
-  XLM:"xlm",    VET:"vet",      HBAR:"hbar",   ICP:"icp",     APT:"apt",
-  SUI:"sui",    SEI:"sei",      STX:"stx",     EGLD:"egld",   FIL:"fil",
-  UNI:"eth",    LINK:"eth",     AAVE:"eth",    CRV:"eth",     MKR:"eth",
-  SNX:"eth",    COMP:"eth",     LDO:"eth",     CAKE:"bsc",    "1INCH":"eth",
-  ARB:"arbitrum",OP:"optimism", IMX:"imx",     STRK:"starknet",
-  SHIB:"eth",   PEPE:"eth",     FLOKI:"eth",   BONK:"sol",    WIF:"sol",
-  XMR:"xmr",    ZEC:"zec",      DASH:"dash",
-  CRO:"cronos", OKB:"eth",      HT:"eth",
-  OSMO:"osmo",  INJ:"inj",      KAVA:"kava",   JUNO:"juno",
-  DAI:"eth",    BUSD:"bsc",     TUSD:"eth",
-  SAND:"eth",   MANA:"eth",     AXS:"eth",     ENJ:"eth",     GALA:"eth",
-  FET:"eth",    OCEAN:"eth",    RNDR:"eth",    WLD:"eth",
-  GRT:"eth",    LRC:"eth",      CHZ:"eth",     BAT:"eth",
-  ZIL:"zil",    THETA:"theta",  EOS:"eos",     XTZ:"xtz",     XEM:"nem",
-  WAVES:"waves",QTUM:"qtum",    ROSE:"oasis",  CFX:"cfx",
-  KSM:"ksm",    ZEN:"zen",      DCR:"dcr",     RVN:"rvn",     DGB:"dgb",
+const EXOLIX_NETWORKS = {
+  BTC: "BTC", ETH: "ETH", USDT: "ETH", BNB: "BSC", SOL: "SOL", USDC: "ETH",
+  XRP: "XRP", DOGE: "DOGE", ADA: "ADA", TRX: "TRX", AVAX: "AVAXC", TON: "TON",
+  DOT: "DOT", MATIC: "MATIC", LTC: "LTC", BCH: "BCH", ATOM: "ATOM", NEAR: "NEAR",
+  XLM: "XLM", ALGO: "ALGO", XMR: "XMR", ZEC: "ZEC", DASH: "DASH", XTZ: "XTZ",
+  DAI: "ETH", BUSD: "BSC", TUSD: "ETH", SHIB: "ETH", PEPE: "ETH",
 };
 
-// Extra SimpleSwap network aliases (ticker → try these network ids in order)
-const SS_NETWORK_ALIASES = {
-  FTM: ["ftm", "fantom", "opera"],
-  MATIC: ["matic", "polygon"],
-  AVAX: ["avax", "cchain"],
-};
+function exolixNetworkFor(symbol) {
+  return EXOLIX_NETWORKS[String(symbol || "").toUpperCase()] || String(symbol || "").toUpperCase();
+}
 
 // ChangeNOW network hints. For multi-chain tokens (USDT/USDC/etc),
 // we try several common networks because provider-side defaults vary by pair.
@@ -213,120 +168,45 @@ async function rateChangeNow(from, to, amount) {
   }
 }
 
-// ─────────────────────────────────────────────────────────────
-// SimpleSwap — V3 estimates
-// ─────────────────────────────────────────────────────────────
-async function rateSimpleSwap(from, to, amount) {
-  if (!SS_KEY) return { provider: "SimpleSwap", error: "No API key configured", simulated: true };
-
-  const fromLc = String(from || "").toLowerCase();
-  const toLc = String(to || "").toLowerCase();
-  const fromP = parseCnTickerForSimpleSwap(fromLc);
-  const toP = parseCnTickerForSimpleSwap(toLc);
-  const symFromU = fromP.ticker.toUpperCase();
-  const symToU = toP.ticker.toUpperCase();
-
-  const netFromDefault = fromP.network;
-  const netToDefault = toP.network;
-
+async function rateExolix(from, to, amount) {
+  if (!EXOLIX_KEY) return { provider: "Exolix", error: "No API key configured", simulated: true };
   try {
-    const parseAmount = (data) => {
-      const pick = (v) => {
-        const n = parseFloat(v);
-        return Number.isFinite(n) && n > 0 ? n : 0;
-      };
-      const candidates = [
-        data?.result?.amountTo,
-        data?.result?.expectedAmount,
-        data?.result?.toAmount,
-        typeof data?.result === "string" || typeof data?.result === "number" ? data.result : null,
-        data?.data?.amountTo,
-        data?.amountTo,
-        data?.toAmount,
-        data?.expectedAmount,
-        data?.estimatedAmount,
-      ];
-      for (const c of candidates) {
-        const n = pick(c);
-        if (n) return n;
-      }
-      return 0;
-    };
+    const qs = new URLSearchParams({
+      coinFrom: String(from || "").toUpperCase(),
+      networkFrom: exolixNetworkFor(from),
+      coinTo: String(to || "").toUpperCase(),
+      networkTo: exolixNetworkFor(to),
+      amount: String(amount),
+      rateType: "float",
+    });
 
-    const requestEstimate = async (networkFrom, networkTo, tickerFrom = fromP.ticker, tickerTo = toP.ticker) => {
-      const qs = new URLSearchParams({
-        tickerFrom: String(tickerFrom).toLowerCase(),
-        networkFrom: networkFrom,
-        tickerTo: String(tickerTo).toLowerCase(),
-        networkTo: networkTo,
-        amount: String(amount),
-        fixed: "false",
-      });
+    const res = await fetch(`${EXOLIX_V2}/rate?${qs.toString()}`, {
+      headers: {
+        Accept: "application/json",
+        Authorization: EXOLIX_KEY,
+      },
+      signal: AbortSignal.timeout(9000),
+    });
 
-      const res = await fetch(`${SS_V3}/estimates?${qs.toString()}`, {
-        headers: { "x-api-key": SS_KEY, "Accept": "application/json" },
-        signal: AbortSignal.timeout(5000),
-      });
-      if (!res.ok) {
-        const body = await res.text().catch(() => "");
-        return { ok: false, amount: 0, err: `SS HTTP ${res.status}: ${body.slice(0, 200)}` };
-      }
-      const data = await res.json().catch(() => ({}));
-      const parsed = parseAmount(data);
-      return { ok: true, amount: parsed, err: parsed ? "" : "SS: empty amount" };
-    };
-
-    const toNetworkCandidates = [
-      netToDefault,
-      ...(symToU === "USDT" ? ["eth", "trx", "bsc", "sol", "matic", "arbitrum", "optimism", "base"] : []),
-      ...(symToU === "USDC" ? ["eth", "bsc", "sol", "matic", "cchain", "arbitrum", "optimism", "base"] : []),
-      "eth", "bsc", "trx", "sol", "matic", "arbitrum", "optimism", "base",
-    ].filter((v, i, arr) => v && arr.indexOf(v) === i);
-    const fromAliases = SS_NETWORK_ALIASES[symFromU] || [];
-    const fromNetworkCandidates = [
-      netFromDefault,
-      ...fromAliases,
-      ...(symFromU === "USDT" ? ["eth", "trx", "bsc", "sol", "matic", "arbitrum", "optimism", "base"] : []),
-      ...(symFromU === "USDC" ? ["eth", "bsc", "sol", "matic", "cchain", "arbitrum", "optimism", "base"] : []),
-      netToDefault,
-    ].filter((v, i, arr) => v && arr.indexOf(v) === i);
-
-    const pairs = [];
-    for (const networkFrom of fromNetworkCandidates.slice(0, 8)) {
-      for (const networkTo of toNetworkCandidates.slice(0, 8)) {
-        pairs.push({ networkFrom, networkTo });
-      }
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      throw new Error(`EXOLIX HTTP ${res.status}: ${body.slice(0, 200)}`);
     }
-    const cappedPairs = pairs.slice(0, 24);
-
-    let amountOut = 0;
-    let lastErr = "";
-    const prim = await requestEstimate(fromP.network, toP.network);
-    if (prim.ok && prim.amount && !isNaN(prim.amount) && prim.amount > amountOut) amountOut = prim.amount;
-    lastErr = prim.err || lastErr;
-
-    const batchSize = 12;
-    for (let i = 0; i < cappedPairs.length; i += batchSize) {
-      const batch = cappedPairs.slice(i, i + batchSize);
-      const results = await Promise.all(batch.map((p) => requestEstimate(p.networkFrom, p.networkTo)));
-      for (const out of results) {
-        if (out.ok && out.amount && !isNaN(out.amount) && out.amount > amountOut) amountOut = out.amount;
-        lastErr = out.err || lastErr || "SS: empty amount";
-      }
-    }
-
-    if (!amountOut || isNaN(amountOut)) throw new Error(lastErr || "SS: empty amount");
+    const data = await res.json().catch(() => ({}));
+    const amountOut = parseFloat(data?.toAmount || 0);
+    const minAmount = parseFloat(data?.minAmount || 0);
+    if (!amountOut || isNaN(amountOut)) throw new Error("Exolix: empty amount");
 
     return {
-      provider: "SimpleSwap", fromToken: from, toToken: to,
+      provider: "Exolix", fromToken: from, toToken: to,
       amountIn: amount, amountOut, rate: amountOut / amount,
-      estimatedTime: "5–20 min", fees: 0.4, minAmount: 0,
+      estimatedTime: "5–20 min", fees: 0.4, minAmount: Number.isFinite(minAmount) ? minAmount : 0,
       quotaId: "", simulated: false, error: null,
     };
   } catch (err) {
-    console.error("[SS rate]", err.message);
+    console.error("[EXOLIX rate]", err.message);
     return {
-      provider: "SimpleSwap", fromToken: from, toToken: to,
+      provider: "Exolix", fromToken: from, toToken: to,
       amountIn: amount, amountOut: 0, rate: 0,
       estimatedTime: "5–20 min", fees: 0.4, minAmount: 0,
       quotaId: "", simulated: true, error: err.message,
@@ -465,14 +345,13 @@ export async function POST(request) {
 
     const parsed = parseFloat(amount);
 
-    // All 3 providers in parallel — one failure never blocks the others
-    const [cn, ss, sz] = await Promise.allSettled([
+    const [cn, ex, sz] = await Promise.allSettled([
       rateChangeNow(from, to, parsed),
-      rateSimpleSwap(from, to, parsed),
+      rateExolix(from, to, parsed),
       rateSwapzone(from, to, parsed),
     ]);
 
-    const allQuotes = [cn, ss, sz].map(r =>
+    const allQuotes = [cn, ex, sz].map(r =>
       r.status === "fulfilled" ? r.value : { simulated: true, amountOut: 0, error: r.reason?.message }
     );
 
@@ -521,7 +400,7 @@ export async function GET() {
     status: "ok",
     providers: {
       ChangeNOW:  !!CN_KEY,
-      SimpleSwap: !!SS_KEY,
+      Exolix: !!EXOLIX_KEY,
       Swapzone:   !!SZ_KEY,
     },
     timestamp: Date.now(),

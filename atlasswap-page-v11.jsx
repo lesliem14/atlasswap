@@ -149,7 +149,7 @@ const COINS_LIST = COINS_DEDUPED;
 
 // ═══════════════════════════════════════════════════════════════
 // ═══════════════════════════════════════════════════════════════
-// API LAYER — ChangeNOW V2 + SimpleSwap V3 + Swapzone
+// API LAYER — ChangeNOW V2 + Exolix V2 + Swapzone
 // All 3 called simultaneously via Promise.allSettled()
 // Best rate wins and routes the swap
 // ═══════════════════════════════════════════════════════════════
@@ -160,8 +160,8 @@ const CN_KEY  =
   process.env.NEXT_PUBLIC_CN_KEY ||
   "";
 const SS_KEY  =
-  process.env.NEXT_PUBLIC_SIMPLESWAP_API_KEY ||
-  process.env.NEXT_PUBLIC_SIMPLESWAP_KEY ||
+  process.env.NEXT_PUBLIC_EXOLIX_API_KEY ||
+  process.env.NEXT_PUBLIC_EXOLIX_KEY ||
   process.env.NEXT_PUBLIC_SS_API_KEY ||
   process.env.NEXT_PUBLIC_SS_KEY ||
   "";
@@ -174,10 +174,10 @@ const SZ_KEY  =
 
 const CN_V1   = "https://api.changenow.io/v1";   // create uses V1 (key in URL)
 const CN_V2   = "https://api.changenow.io/v2";   // rate uses V2 (header auth)
-const SS_BASE = "https://api.simpleswap.io/v3";
+const SS_BASE = "https://exolix.com/api/v2";
 const SZ_BASE = "https://api.swapzone.io/v1";
 
-// ── SimpleSwap V3: coin → network mapping ──
+// ── Exolix network mapping ──
 // Every coin needs its primary network identifier
 const SS_NETWORKS = {
   // Top 10
@@ -566,12 +566,12 @@ async function createExchangeChangeNow(from, to, amount, destAddress) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// 2. SIMPLESWAP V3
+// 2. EXOLIX V2
 //    Auth: header x-api-key
 //    Rate: GET /v3/estimates
 //    Create: POST /v3/exchanges
 // ─────────────────────────────────────────────────────────────
-async function fetchSimpleSwapRate(from, to, amount) {
+async function fetchExolixRate(from, to, amount) {
   try {
     if (!SS_KEY) throw new Error("No SS key");
     const netFrom = SS_NETWORKS[from] || from.toLowerCase();
@@ -582,15 +582,15 @@ async function fetchSimpleSwapRate(from, to, amount) {
     const data = await res.json();
     const estimated = parseFloat(data?.result?.amountTo ?? data?.result ?? 0);
     if (!estimated || isNaN(estimated)) throw new Error("No SS amount");
-    return { provider: "SimpleSwap", rate: estimated, rawRate: estimated / amount, available: true, simulated: false };
+    return { provider: "Exolix", rate: estimated, rawRate: estimated / amount, available: true, simulated: false };
   } catch {
     const rate = ((amount * (BASE_RATES[from] || 1)) / (BASE_RATES[to] || 1)) * 0.992;
-    return { provider: "SimpleSwap", rate, rawRate: rate / amount, available: true, simulated: true };
+    return { provider: "Exolix", rate, rawRate: rate / amount, available: true, simulated: true };
   }
 }
 
-async function createExchangeSimpleSwap(from, to, amount, destAddress) {
-  if (!SS_KEY) throw new Error("No SimpleSwap key");
+async function createExchangeExolix(from, to, amount, destAddress) {
+  if (!SS_KEY) throw new Error("No Exolix key");
   const netFrom = SS_NETWORKS[from] || from.toLowerCase();
   const netTo   = SS_NETWORKS[to]   || to.toLowerCase();
   const res = await fetch(`${SS_BASE}/exchanges`, {
@@ -603,16 +603,16 @@ async function createExchangeSimpleSwap(from, to, amount, destAddress) {
     }),
   });
   const data = await res.json();
-  if (!res.ok) throw new Error(`SimpleSwap ${res.status}: ${JSON.stringify(data)}`);
+  if (!res.ok) throw new Error(`Exolix ${res.status}: ${JSON.stringify(data)}`);
   const result = data?.result ?? data;
   const depositAddress = result?.addressFrom || result?.payin_address || data?.addressFrom || "";
   const exchangeId     = result?.id || data?.id || "";
   const payinExtraId   = result?.extraIdFrom || result?.memo || "";
   if (!depositAddress) {
-    console.error("SimpleSwap response:", JSON.stringify(data));
-    throw new Error(`SimpleSwap no deposit address: ${JSON.stringify(data)}`);
+    console.error("Exolix response:", JSON.stringify(data));
+    throw new Error(`Exolix no deposit address: ${JSON.stringify(data)}`);
   }
-  return { depositAddress, exchangeId, payinExtraId, provider: "SimpleSwap" };
+  return { depositAddress, exchangeId, payinExtraId, provider: "Exolix" };
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -675,7 +675,7 @@ async function createExchangeSwapzone(from, to, amount, destAddress, quotaId) {
 async function fetchBestRate(from, to, amount) {
   const [cn, ss, sz] = await Promise.allSettled([
     fetchChangeNowRate(from, to, amount),
-    fetchSimpleSwapRate(from, to, amount),
+    fetchExolixRate(from, to, amount),
     fetchSwapzoneRate(from, to, amount),
   ]);
   const results = [cn, ss, sz]
@@ -703,12 +703,12 @@ async function fetchBestRate(from, to, amount) {
 // CREATE EXCHANGE — tries winning provider, falls back to others
 // ─────────────────────────────────────────────────────────────
 async function createExchange(provider, from, to, amount, destAddress, extraData = {}) {
-  const order = [provider, ...["ChangeNOW", "SimpleSwap", "Swapzone"].filter(p => p !== provider)];
+  const order = [provider, ...["ChangeNOW", "Exolix", "Swapzone"].filter(p => p !== provider)];
   let lastErr = null;
   for (const p of order) {
     try {
       if (p === "ChangeNOW")  return await createExchangeChangeNow(from, to, amount, destAddress);
-      if (p === "SimpleSwap") return await createExchangeSimpleSwap(from, to, amount, destAddress);
+      if (p === "Exolix") return await createExchangeExolix(from, to, amount, destAddress);
       if (p === "Swapzone")   return await createExchangeSwapzone(from, to, amount, destAddress, extraData.quotaId);
     } catch (e) {
       lastErr = e;
@@ -1036,7 +1036,7 @@ export default function AtlasSwapApp() {
     } catch { return null; }
   }, []);
 
-  // Fetch USD price via SimpleSwap as fallback:
+  // Fetch USD price via Exolix as fallback:
   // GET /v3/estimates?tickerFrom={sym}&networkFrom={net}&tickerTo=usdt&networkTo=eth&amount=1
   const fetchSSPrice = useCallback(async (symbol) => {
     if (!SS_KEY) return null;
@@ -1069,7 +1069,7 @@ export default function AtlasSwapApp() {
       toFetch.map(async (symbol) => {
         // Try ChangeNOW first
         let price = await fetchCNPrice(symbol);
-        // If CN fails, try SimpleSwap
+        // If CN fails, try Exolix
         if (!price) price = await fetchSSPrice(symbol);
         // Final fallback: BASE_RATES
         if (!price) price = BASE_RATES[symbol] || 0;
@@ -1662,7 +1662,7 @@ export default function AtlasSwapApp() {
             fontSize: "15px", color: "rgba(240,244,255,0.5)",
             lineHeight: 1.75, marginBottom: "40px", maxWidth: "360px", fontWeight: 400,
           }}>
-            AtlasSwap aggregates ChangeNOW, SimpleSwap and Swapzone in real time — routing every swap to the best available rate. Zero custody. No registration. Instant.
+            AtlasSwap aggregates ChangeNOW, Exolix and Swapzone in real time — routing every swap to the best available rate. Zero custody. No registration. Instant.
           </p>
 
           {/* Stats grid */}
@@ -2265,7 +2265,7 @@ export default function AtlasSwapApp() {
               <span style={{ fontSize: "10px", color: "rgba(240,244,255,0.25)", fontWeight: 500 }}>
                 Aggregating
               </span>
-              {["ChangeNOW", "SimpleSwap", "Swapzone"].map((p, i) => (
+              {["ChangeNOW", "Exolix", "Swapzone"].map((p, i) => (
                 <span key={p} style={{
                   fontSize: "10px", fontWeight: 700,
                   color: "rgba(240,244,255,0.4)",
@@ -2301,7 +2301,7 @@ export default function AtlasSwapApp() {
           {
             icon: "⚡",
             title: "3-Provider Aggregation",
-            desc: "ChangeNOW, SimpleSwap and Swapzone compared simultaneously in the background. You always get the best rate, automatically.",
+            desc: "ChangeNOW, Exolix and Swapzone compared simultaneously in the background. You always get the best rate, automatically.",
           },
           {
             icon: "🔐",
@@ -2569,7 +2569,7 @@ export default function AtlasSwapApp() {
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"12px",marginBottom:"22px"}}>
               {[
                 { icon:"⚡", color:"#00E5A0", title:"Real-Time Rate Aggregation",
-                  desc:"All three exchange providers — ChangeNOW, SimpleSwap, and Swapzone — are queried simultaneously the moment you enter an amount. The fastest and best rate wins. You never pay more than necessary." },
+                  desc:"All three exchange providers — ChangeNOW, Exolix, and Swapzone — are queried simultaneously the moment you enter an amount. The fastest and best rate wins. You never pay more than necessary." },
                 { icon:"🔐", color:"#7B9EF0", title:"Non-Custodial Architecture",
                   desc:"AtlasSwap has no wallet, no treasury, and no ability to freeze or delay your funds. Swaps execute peer-to-peer via our exchange partners. We are a routing layer, nothing more." },
                 { icon:"🌐", color:"#00C4FF", title:"1,500+ Coin Coverage",
@@ -2654,10 +2654,10 @@ export default function AtlasSwapApp() {
                   stats:[["1,500+","Coins"],["0.4%","Our Commission"],["Since 2017","Established"]],
                 },
                 {
-                  name:"SimpleSwap", url:"simpleswap.io", color:"#7B9EF0",
+                  name:"Exolix", url:"exolix.com", color:"#7B9EF0",
                   badge:"Secondary Provider", badgeBg:"rgba(123,158,240,0.12)", badgeColor:"#7B9EF0",
                   icon:"◈", founded:"Founded 2018",
-                  desc:"SimpleSwap is a clean, no-registration swap platform known for competitive rates and a transparent affiliate programme. It supports both fixed and floating rate swaps across 600+ coins. AtlasSwap queries SimpleSwap in real time and routes to it automatically when it returns the best rate for your pair.",
+                  desc:"Exolix is a non-custodial swap platform known for competitive rates and broad network support. AtlasSwap queries Exolix in real time and routes to it automatically when it returns the best rate for your pair.",
                   trustPoints:["Fixed & floating rate options","600+ supported assets","Transparent fee structure","No KYC required"],
                   stats:[["600+","Coins"],["Fixed/Float","Rate Type"],["Since 2018","Established"]],
                 },
@@ -2764,7 +2764,7 @@ export default function AtlasSwapApp() {
             {/* Body */}
             <div style={{fontSize:"13px",color:"rgba(240,244,255,0.5)",lineHeight:1.85,marginBottom:"22px"}}>
               <p style={{marginBottom:"14px"}}>
-                AtlasSwap is a <strong style={{color:"#fff",fontWeight:600}}>non-custodial crypto swap aggregator</strong>. We connect to ChangeNOW, SimpleSwap, and Swapzone simultaneously and route every swap through whichever provider offers the best rate at that exact moment — automatically, with no manual comparison required from you.
+                AtlasSwap is a <strong style={{color:"#fff",fontWeight:600}}>non-custodial crypto swap aggregator</strong>. We connect to ChangeNOW, Exolix, and Swapzone simultaneously and route every swap through whichever provider offers the best rate at that exact moment — automatically, with no manual comparison required from you.
               </p>
               <p style={{marginBottom:"14px"}}>
                 We built AtlasSwap on a simple belief: <strong style={{color:"#fff",fontWeight:600}}>you should never have to trust us with your funds</strong>. Our architecture makes that structurally impossible. AtlasSwap has no wallet. We cannot hold, delay, freeze, or lose your crypto. Your swap goes directly from your wallet to the exchange provider to your destination wallet.

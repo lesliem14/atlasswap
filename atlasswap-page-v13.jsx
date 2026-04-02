@@ -188,7 +188,7 @@ function tickerUsdFallback(ticker) {
 // WHY SERVER ROUTES?
 //   - NEXT_PUBLIC_ env vars are baked into the JS bundle and
 //     visible to anyone who opens DevTools.
-//   - Provider APIs (SimpleSwap, ChangeNOW) reject requests
+//   - Provider APIs (Exolix, ChangeNOW) reject requests
 //     from unknown browser origins → 401 / 400 errors.
 //   - Server routes call providers from Vercel's servers using
 //     server-only env vars that never reach the browser.
@@ -199,7 +199,7 @@ function tickerUsdFallback(ticker) {
 //
 // VERCEL ENV VARS REQUIRED (Settings → Environment Variables):
 //   CHANGENOW_API_KEY   (no NEXT_PUBLIC_ prefix — server only)
-//   SIMPLESWAP_API_KEY  (no NEXT_PUBLIC_ prefix — server only)
+//   EXOLIX_API_KEY  (no NEXT_PUBLIC_ prefix — server only)
 //   SWAPZONE_API_KEY    (no NEXT_PUBLIC_ prefix — server only)
 //
 // The old NEXT_PUBLIC_ vars still work as fallback in the routes.
@@ -656,7 +656,7 @@ function cleanErrorMessage(raw, fromCoin, toCoin, minAmount) {
 // ── Normalized quote format ──────────────────────────────────
 // Every provider returns quotes in this shape:
 // {
-//   provider:      string,   — "ChangeNOW" | "SimpleSwap" | "Swapzone"
+//   provider:      string,   — "ChangeNOW" | "Exolix" | "Swapzone"
 //   fromToken:     string,   — e.g. "BTC"
 //   toToken:       string,   — e.g. "ETH"
 //   amountIn:      number,   — user input amount
@@ -1529,11 +1529,8 @@ export default function AtlasSwapApp() {
                 <span style={{ color: "rgba(240,244,255,0.55)" }}>
                   ${price < 0.01 ? price.toExponential(2) : price < 1 ? price.toFixed(4) : price.toLocaleString(undefined, { maximumFractionDigits: 2 })}
                 </span>
-                <span style={{
-                  color: isUp ? "#00E5A0" : "#FF5A72",
-                  fontSize: "10px", fontWeight: 600,
-                }}>
-                  {isUp ? "▲" : "▼"} {Math.abs(change).toFixed(2)}%
+                <span style={{ color: isUp ? "#00E5A0" : "#FF5A72", fontSize: "10px", fontWeight: 600 }}>
+                  {isUp ? "▲" : "▼"}
                 </span>
               </span>
             );
@@ -1687,7 +1684,7 @@ export default function AtlasSwapApp() {
             fontSize: "15px", color: "rgba(240,244,255,0.5)",
             lineHeight: 1.75, marginBottom: "40px", maxWidth: "360px", fontWeight: 400,
           }}>
-            AtlasSwap aggregates ChangeNOW, SimpleSwap and Swapzone in real time — routing every swap to the best available rate. Zero custody. No registration. Instant.
+            AtlasSwap aggregates ChangeNOW, Exolix and Swapzone in real time — routing every swap to the best available rate. Zero custody. No registration. Instant.
           </p>
 
           {/* Stats grid */}
@@ -1952,10 +1949,10 @@ export default function AtlasSwapApp() {
                       fontWeight: 700, letterSpacing: "0.1em", marginBottom: "6px",
                     }}>RATE COMPARISON</div>
                     <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
-                      {["ChangeNOW","SimpleSwap","Swapzone"].map(pName => {
+                      {["ChangeNOW","Exolix","Swapzone"].map(pName => {
                         const q = allProviderQuotes.find(x => x.provider === pName);
                         const isBest = pName === bestProvider;
-                        const provColors = { ChangeNOW: "#00E5A0", SimpleSwap: "#7B9EF0", Swapzone: "#F7931A" };
+                        const provColors = { ChangeNOW: "#00E5A0", Exolix: "#7B9EF0", Swapzone: "#F7931A" };
                         const col = provColors[pName] || "#888";
                         if (!q) {
                           return (
@@ -1975,7 +1972,7 @@ export default function AtlasSwapApp() {
                           <div key={pName} style={{
                             display: "flex", justifyContent: "space-between", alignItems: "center",
                             padding: "7px 10px",
-                            background: isBest ? `rgba(${pName === "ChangeNOW" ? "0,229,160" : pName === "SimpleSwap" ? "123,158,240" : "247,147,26"},0.07)` : "rgba(255,255,255,0.02)",
+                            background: isBest ? `rgba(${pName === "ChangeNOW" ? "0,229,160" : pName === "Exolix" ? "123,158,240" : "247,147,26"},0.07)` : "rgba(255,255,255,0.02)",
                             border: `1px solid ${isBest ? col + "40" : "rgba(255,255,255,0.06)"}`,
                             borderRadius: "8px",
                             transition: "all 0.3s",
@@ -2029,7 +2026,7 @@ export default function AtlasSwapApp() {
                 {/* ── Loading skeleton when first fetching ─────────────── */}
                 {rateLoading && allProviderQuotes.length === 0 && (
                   <div style={{ marginBottom: "14px" }}>
-                    {["ChangeNOW","SimpleSwap","Swapzone"].map(p => (
+                    {["ChangeNOW","Exolix","Swapzone"].map(p => (
                       <div key={p} style={{
                         height: "32px", borderRadius: "8px", marginBottom: "4px",
                         background: "linear-gradient(90deg, rgba(255,255,255,0.04) 25%, rgba(255,255,255,0.08) 50%, rgba(255,255,255,0.04) 75%)",
@@ -2429,7 +2426,7 @@ export default function AtlasSwapApp() {
               <span style={{ fontSize: "10px", color: "rgba(240,244,255,0.25)", fontWeight: 500 }}>
                 Aggregating
               </span>
-              {["ChangeNOW", "SimpleSwap", "Swapzone"].map((p, i) => (
+              {["ChangeNOW", "Exolix", "Swapzone"].map((p, i) => (
                 <span key={p} style={{
                   fontSize: "10px", fontWeight: 700,
                   color: "rgba(240,244,255,0.4)",
@@ -2465,7 +2462,7 @@ export default function AtlasSwapApp() {
           {
             icon: "⚡",
             title: "3-Provider Aggregation",
-            desc: "ChangeNOW, SimpleSwap and Swapzone compared simultaneously in the background. You always get the best rate, automatically.",
+            desc: "ChangeNOW, Exolix and Swapzone compared simultaneously in the background. You always get the best rate, automatically.",
           },
           {
             icon: "🔐",
@@ -2769,7 +2766,7 @@ export default function AtlasSwapApp() {
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"12px",marginBottom:"22px"}}>
               {[
                 { icon:"⚡", color:"#00E5A0", title:"Real-Time Rate Aggregation",
-                  desc:"All three exchange providers — ChangeNOW, SimpleSwap, and Swapzone — are queried simultaneously the moment you enter an amount. The fastest and best rate wins. You never pay more than necessary." },
+                  desc:"All three exchange providers — ChangeNOW, Exolix, and Swapzone — are queried simultaneously the moment you enter an amount. The fastest and best rate wins. You never pay more than necessary." },
                 { icon:"🔐", color:"#7B9EF0", title:"Non-Custodial Architecture",
                   desc:"AtlasSwap has no wallet, no treasury, and no ability to freeze or delay your funds. Swaps execute peer-to-peer via our exchange partners. We are a routing layer, nothing more." },
                 { icon:"🌐", color:"#00C4FF", title:"1,500+ Coin Coverage",
@@ -2854,10 +2851,10 @@ export default function AtlasSwapApp() {
                   stats:[["1,500+","Coins"],["0.4%","Our Commission"],["Since 2017","Established"]],
                 },
                 {
-                  name:"SimpleSwap", url:"simpleswap.io", color:"#7B9EF0",
+                  name:"Exolix", url:"exolix.com", color:"#7B9EF0",
                   badge:"Secondary Provider", badgeBg:"rgba(123,158,240,0.12)", badgeColor:"#7B9EF0",
                   icon:"◈", founded:"Founded 2018",
-                  desc:"SimpleSwap is a clean, no-registration swap platform known for competitive rates and a transparent affiliate programme. It supports both fixed and floating rate swaps across 600+ coins. AtlasSwap queries SimpleSwap in real time and routes to it automatically when it returns the best rate for your pair.",
+                  desc:"Exolix is a non-custodial swap platform known for competitive rates and broad network support. AtlasSwap queries Exolix in real time and routes to it automatically when it returns the best rate for your pair.",
                   trustPoints:["Fixed & floating rate options","600+ supported assets","Transparent fee structure","No KYC required"],
                   stats:[["600+","Coins"],["Fixed/Float","Rate Type"],["Since 2018","Established"]],
                 },
@@ -2964,7 +2961,7 @@ export default function AtlasSwapApp() {
             {/* Body */}
             <div style={{fontSize:"13px",color:"rgba(240,244,255,0.5)",lineHeight:1.85,marginBottom:"22px"}}>
               <p style={{marginBottom:"14px"}}>
-                AtlasSwap is a <strong style={{color:"#fff",fontWeight:600}}>non-custodial crypto swap aggregator</strong>. We connect to ChangeNOW, SimpleSwap, and Swapzone simultaneously and route every swap through whichever provider offers the best rate at that exact moment — automatically, with no manual comparison required from you.
+                AtlasSwap is a <strong style={{color:"#fff",fontWeight:600}}>non-custodial crypto swap aggregator</strong>. We connect to ChangeNOW, Exolix, and Swapzone simultaneously and route every swap through whichever provider offers the best rate at that exact moment — automatically, with no manual comparison required from you.
               </p>
               <p style={{marginBottom:"14px"}}>
                 We built AtlasSwap on a simple belief: <strong style={{color:"#fff",fontWeight:600}}>you should never have to trust us with your funds</strong>. Our architecture makes that structurally impossible. AtlasSwap has no wallet. We cannot hold, delay, freeze, or lose your crypto. Your swap goes directly from your wallet to the exchange provider to your destination wallet.
