@@ -1393,7 +1393,7 @@ export default function AtlasSwapApp() {
                   color: isUp ? "#00E5A0" : "#FF5A72",
                   fontSize: "10px", fontWeight: 600,
                 }}>
-                  {isUp ? "▲" : "▼"} {Math.abs(change).toFixed(2)}%
+                  {isUp ? "▲" : "▼"}
                 </span>
               </span>
             );
@@ -1437,6 +1437,7 @@ export default function AtlasSwapApp() {
             { label: "Exchange",    action: () => setShowExchange(true) },
             { label: "Features",    action: () => setShowFeatures(true) },
             { label: "API Partners",action: () => setShowPartners(true) },
+            { label: "How it works",action: () => setShowExchange(true) },
             { label: "About",       action: () => setShowAbout(true) },
           ].map(item => (
             <a key={item.label} href="#"
@@ -2197,11 +2198,16 @@ export default function AtlasSwapApp() {
           </span>
         </div>
         <div style={{ display: "flex", gap: "24px" }}>
-          {["Terms", "Privacy", "Contact", "API Docs"].map(l => (
+          {["Terms", "Privacy", "Contact", "How it works", "API Docs"].map(l => (
             <a key={l} href="#" style={{
               fontSize: "12px", color: "rgba(240,244,255,0.3)",
               textDecoration: "none", transition: "color 0.2s",
             }}
+            onClick={
+              l === "How it works"
+                ? e => { e.preventDefault(); setShowExchange(true); }
+                : undefined
+            }
             onMouseEnter={e => e.currentTarget.style.color = "#fff"}
             onMouseLeave={e => e.currentTarget.style.color = "rgba(240,244,255,0.3)"}
             >{l}</a>
@@ -2348,16 +2354,19 @@ export default function AtlasSwapApp() {
             <div style={{marginBottom:"24px"}}>
               <div style={{fontSize:"10px",color:"rgba(240,244,255,0.3)",fontWeight:700,letterSpacing:"0.1em",marginBottom:"14px"}}>THE SWAP PROCESS — STEP BY STEP</div>
               {[
-                { n:"01", title:"Choose your coins", desc:"Select the cryptocurrency you want to send and the one you want to receive. AtlasSwap supports 1,500+ coins across every major blockchain." },
-                { n:"02", title:"Enter your amount", desc:"Type in how much you want to swap. The estimated receive amount updates in real time as all three exchange providers are queried simultaneously in the background." },
-                { n:"03", title:"Paste your wallet address", desc:"Enter the destination wallet address where you want to receive your coins. This is the only thing we ask — no email, no account, no identity." },
-                { n:"04", title:"Review and confirm", desc:"You'll see a full summary — the amount you're sending, the estimated amount you'll receive, which provider is routing your swap, and the estimated time." },
-                { n:"05", title:"Send your crypto", desc:"After confirming, you'll receive a deposit address. Send your crypto there. The exchange provider processes your swap and sends the output directly to your wallet." },
-                { n:"06", title:"Swap complete", desc:"Your exchanged crypto arrives in your wallet. Average completion time is 5 to 20 minutes depending on network congestion. AtlasSwap never touches your funds at any point." },
+                { n:"01", title:"Choose your coins", desc:"Select the cryptocurrency you want to send and the one you want to receive. AtlasSwap supports 1,500+ coins across every major blockchain.", img:"/globe.svg" },
+                { n:"02", title:"Enter your amount", desc:"Type in how much you want to swap. The estimated receive amount updates in real time as all three exchange providers are queried simultaneously in the background.", img:"/next.svg" },
+                { n:"03", title:"Paste your wallet address", desc:"Enter the destination wallet address where you want to receive your coins. This is the only thing we ask — no email, no account, no identity.", img:"/file.svg" },
+                { n:"04", title:"Review and confirm", desc:"You'll see a full summary — the amount you're sending, the estimated amount you'll receive, which provider is routing your swap, and the estimated time.", img:"/window.svg" },
+                { n:"05", title:"Send your crypto", desc:"After confirming, you'll receive a deposit address. Send your crypto there. The exchange provider processes your swap and sends the output directly to your wallet.", img:"/vercel.svg" },
+                { n:"06", title:"Swap complete", desc:"Your exchanged crypto arrives in your wallet. Average completion time is 5 to 20 minutes depending on network congestion. AtlasSwap never touches your funds at any point.", img:"/window.svg" },
               ].map((s,i)=>(
                 <div key={s.n} style={{display:"flex",gap:"16px",marginBottom:"14px",alignItems:"flex-start"}}>
-                  <div style={{width:32,height:32,borderRadius:"10px",background:"rgba(0,229,160,0.08)",border:"1px solid rgba(0,229,160,0.18)",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,fontFamily:"'Syne',sans-serif",fontWeight:800,fontSize:"11px",color:"#00E5A0",letterSpacing:"0.05em"}}>{s.n}</div>
+                  <div style={{width:44,height:44,borderRadius:"14px",background:"rgba(0,229,160,0.05)",border:"1px solid rgba(0,229,160,0.18)",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>
+                    <img src={s.img} alt="" style={{width:22,height:22,opacity:0.95}} />
+                  </div>
                   <div>
+                    <div style={{width:32,height:32,borderRadius:"10px",background:"rgba(0,229,160,0.08)",border:"1px solid rgba(0,229,160,0.18)",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,fontFamily:"'Syne',sans-serif",fontWeight:800,fontSize:"11px",color:"#00E5A0",letterSpacing:"0.05em",marginBottom:"6px"}}>{s.n}</div>
                     <div style={{fontFamily:"'Syne',sans-serif",fontWeight:700,fontSize:"13px",marginBottom:"4px"}}>{s.title}</div>
                     <div style={{fontSize:"12px",color:"rgba(240,244,255,0.4)",lineHeight:1.7}}>{s.desc}</div>
                   </div>
